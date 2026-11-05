@@ -1,0 +1,34 @@
+name: Portable host smoke tests
+
+on:
+  push:
+    branches: [portable]
+    paths:
+      - 'portable/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/portable.yml'
+  pull_request:
+    paths:
+      - 'portable/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/portable.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (no assets or SDK required)
+        run: cmake -S . -B out/portable-host -DPGR1_PORTABLE_HOST_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
+      - name: Build
+        run: cmake --build out/portable-host --config Debug
+      - name: Test
+        run: ctest --test-dir out/portable-host -C Debug --output-on-failure

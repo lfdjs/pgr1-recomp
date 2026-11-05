@@ -6,6 +6,15 @@ project(game LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Opt-in host API test build. It needs neither XBE assets nor the SDK and
+# leaves the original game's Windows build unchanged when disabled.
+option(PGR1_PORTABLE_HOST_TESTS "Build standalone portable host services/tests" OFF)
+if(PGR1_PORTABLE_HOST_TESTS)
+    include(CTest)
+    add_subdirectory(portable)
+    return()
+endif()
+
 # the release, by assets/default.xbe: each disc is another compile (config/<prefix>*.toml, every address ported;
 # PGR1_RELEASE picks the hooks' addresses, src/common/release.h). None of these: Europe 1.1, config/pgr1.toml
 set(PGR1_PREFIX "")
