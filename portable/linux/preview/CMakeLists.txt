@@ -1,0 +1,38 @@
+cmake_minimum_required(VERSION 3.25)
+project(pgr1_linux_preview LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Reuse SDL3 already fetched during `scripts/linux-tools.sh` if no system SDL3
+# development package is installed. This is a separate GUI-enabled SDL build:
+# the existing headless SDK configure explicitly disabled X11/Wayland.
+get_filename_component(PGR1_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+find_package(SDL3 3.2 CONFIG QUIET)
+if(NOT TARGET SDL3::SDL3)
+    set(PGR1_BUNDLED_SDL3 "${PGR1_ROOT}/build/linux/_deps/sdl3-src")
+    if(NOT EXISTS "${PGR1_BUNDLED_SDL3}/CMakeLists.txt")
+        message(FATAL_ERROR "SDL3 not found. Run scripts/portable-dev.sh linux-tools first, or install SDL3 development files (libsdl3-dev).")
+    endif()
+    message(STATUS "Building SDL3 GUI from cached SDK source: ${PGR1_BUNDLED_SDL3}")
+    set(SDL_SHARED ON CACHE BOOL "" FORCE)
+    set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+    set(SDL_UNIX_CONSOLE_BUILD OFF CACHE BOOL "" FORCE)
+    set(SDL_X11 ON CACHE BOOL "" FORCE)
+    set(SDL_WAYLAND ON CACHE BOOL "" FORCE)
+    set(SDL_RENDER ON CACHE BOOL "" FORCE)
+    set(SDL_GPU OFF CACHE BOOL "" FORCE)
+    set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
+    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${PGR1_BUNDLED_SDL3}" "${CMAKE_BINARY_DIR}/_sdl3" EXCLUDE_FROM_ALL)
+endif()
+
+add_executable(pgr1_preview main.cpp)
+target_link_libraries(pgr1_preview PRIVATE SDL3::SDL3)
+target_include_directories(pgr1_preview PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(pgr1_preview_tga_tests tga_tests.cpp)
+    add_test(NAME tga_decoder COMMAND pgr1_preview_tga_tests)
+endif()

@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.25)
+project(pgr1_gldirect_bridge_tests LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_executable(pgr1_gldirect_bridge_test ../bridge.cpp bridge_test.cpp)
+include(CTest)
+add_test(NAME bridge_atomic_snapshot COMMAND pgr1_gldirect_bridge_test)
