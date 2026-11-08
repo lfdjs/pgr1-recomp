@@ -1,7 +1,10 @@
-# PGR1 Portable — milestone 00
+# PGR1 Portable
 
-Status: **host-services scaffold only**. This is not yet a Linux graphical port.
-Do not interpret the host smoke test as proof that the game runs on another platform.
+Current: native Linux GPU runtime with translated SDK shaders, SDL3 audio and
+OpenGL/Zink race validation. See [native runtime](04-native-linux.md) and
+[validation report](validation-2026-11-08.md). Performance and visual parity remain open.
+
+The milestone 00 scaffold description below is historical.
 
 ## Current baseline
 
@@ -46,3 +49,18 @@ Without that option the original CMake configuration remains unchanged.
 - Keep game-specific hooks in `src/game/`, platform implementations separate, reusable SDK fixes in the SDK fork.
 - Do not replace `gpu::Backend` or rewrite the recompiler unless necessary.
 - Do not claim hardware functionality until tested on target devices.
+
+## Native Linux renderer
+
+The scaffold description above is historical. The native SDL3/OpenGL runtime now
+uses SDK-translated shaders, GPU geometry, textures and resource synchronization.
+See [build, run, profiling and acceptance limits](04-native-linux.md).
+
+```sh
+bash scripts/portable-linux.sh doctor
+bash scripts/portable-linux.sh build
+bash scripts/portable-linux.sh run
+```
+
+CPU/SHM preview remains an explicit diagnostic path. Native Vulkan is not implemented;
+`run-vulkan` selects Mesa Zink and checks the actual renderer.

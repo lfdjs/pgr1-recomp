@@ -3,8 +3,9 @@
 Newest first. Each entry: date, what changed, what was learned, what's next.
 
 ## Status
-- Portable OpenGL: FVF XYZRHW GPU path and EGL pixel tests implemented; see docs/portable/03c2-gpu-geometry.md.
-  Game scenes unvalidated: assets/generated code absent and the portable SDK gitlink is unavailable upstream.
+- Portable Linux: real OpenGL GPU rendering with SDK shader translation, SDL3 audio, owned commands and resource synchronization.
+  Native and Zink/Vulkan actual races tested; performance and visual parity remain incomplete.
+  SDK recovered at 97b1654; assets supplied locally. See docs/portable/validation-2026-11-08.md.
 - Milestone: plays on Windows (Harry): races, sound, shadows, widescreen and ultrawide, skip intro, FOV, hide HUD
   checked; SMOKE OK headless (first boot, profile, arcade race)
 - Achievements: 31 (ACHIEVEMENTS.md), conditions in src/game/achievement_set.cpp, tested headless with pokes
@@ -19,6 +20,22 @@ Newest first. Each entry: date, what changed, what was learned, what's next.
 - Plan: .local/PGR1-plan.md (detailed, not committed) and .local/PGR1-summary.md
 
 ## Log
+
+### 2026-11-08 - native Linux SDK shaders and GPU race acceptance
+
+Started from 808d49a, preserving 32daba9 and SDK 97b1654. Added cached SDK HLSL ->
+SPIR-V -> GLSL translation, sixteen-attribute geometry, shader constants, texture
+mips/cubemaps, GPU CopyRects/readbacks, bounded command queue and staged uploads.
+Fixed render-target cube binding, constant overrides, HUD aspect, partial-frame
+presentation, texture eviction, odd-width depth readbacks and shutdown promises.
+Added SDL3 audio, reproducible portable-linux.sh CLI, CPU reference comparisons
+and frame/CPU/GPU-span reports. Six primary tests pass; decoder and IPC tests also
+pass. Clean native game/SDL build succeeds with spaces in its build directory.
+Original headless smoke: 7860 frames, no traps. Native race accelerated to 58 mph,
+pause/restart/quit worked and a saved profile was loaded in a separate Zink process.
+Zink on RTX 3060 Ti reached a real race at 44 mph, with HUD and scenery.
+No native Vulkan backend or stable 60 FPS claim. Detailed measurements, remaining
+limits and reproducible commands: docs/portable/validation-2026-11-08.md.
 
 ### 2026-11-08 - portable OpenGL FVF geometry
 

@@ -232,3 +232,11 @@ and to talk about the port with other players.
 This project's code is released under the [MIT License](LICENSE). The SDK in `sdk/` keeps its own MIT license
 ([sdk/LICENSE](sdk/LICENSE)). Neither covers Project Gotham Racing itself: the game's code and assets belong to their
 owners and are not part of this repository.
+
+## Experimental native Linux port
+
+The `portable` branch has a separate SDL3/OpenGL runtime using the SDK's Xbox shader
+translation through HLSL, SPIR-V and GLSL. It preserves the original headless harness.
+See [Linux build/run instructions and current acceptance limits](docs/portable/04-native-linux.md).
+Use `bash scripts/portable-linux.sh doctor`, `build`, then `run`. This remains an
+experimental port; completed draws alone do not establish visual fidelity or 60 FPS.

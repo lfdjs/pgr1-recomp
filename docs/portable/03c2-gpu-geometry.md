@@ -1,5 +1,7 @@
 # PGR1 Portable — OpenGL FVF geometry increment
 
+This historical increment is superseded by [the native shader/resource stage](04-native-linux.md).
+
 This supersedes the clear-only 03C.1 implementation. It is an experimental renderer,
 not a claim that PGR1 scenes or gameplay are now correct.
 
