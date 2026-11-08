@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <exception>
 #include <functional>
 #include <cstdio>
@@ -26,6 +27,7 @@
 #include "image_symbols.h"
 #include "commands.h"
 #include "renderer.h"
+#include "sdl_audio.h"
 
 namespace fs = std::filesystem;
 namespace {
@@ -78,6 +80,7 @@ SDL_Gamepad* OpenFirstPad() {
     SDL_JoystickID* ids = SDL_GetGamepads(&count);
     SDL_Gamepad* pad = ids && count > 0 ? SDL_OpenGamepad(ids[0]) : nullptr;
     SDL_free(ids);
+    if(pad) std::printf("Gamepad connected: %s\n",SDL_GetGamepadName(pad));
     return pad;
 }
 
@@ -131,13 +134,14 @@ int main(int argc, char** argv) {
         return 2;
     }
     setenv("GAME_DIR", game.string().c_str(), 1);
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1;
     }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_Window* window = SDL_CreateWindow("PGR1 - Linux OpenGL (experimental)", 960, 720,
+    const auto output=app::Output();
+    SDL_Window* window = SDL_CreateWindow("PGR1 - Linux OpenGL (experimental)", output.width, output.height,
                                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL);
     if (!window) { std::fprintf(stderr, "SDL window: %s\n", SDL_GetError()); SDL_Quit(); return 1; }
     SDL_GLContext gl = SDL_GL_CreateContext(window);
@@ -149,60 +153,105 @@ int main(int argc, char** argv) {
     }
     std::printf("PGR1 OpenGL: GL vendor=%s; renderer=%s; version=%s\n",
                 glGetString(kVendor), glGetString(kRenderer), glGetString(kVersion));
+    const std::string driver=reinterpret_cast<const char*>(glGetString(kRenderer));
+    if(std::getenv("PGR1_EXPECT_ZINK") && driver.find("zink")==std::string::npos) {
+        std::fprintf(stderr,"Zink requested, but context renderer is %s\n",driver.c_str());
+        SDL_GL_DestroyContext(gl); SDL_DestroyWindow(window); SDL_Quit(); return 2;
+    }
+    if((driver.find("llvmpipe")!=std::string::npos || driver.find("softpipe")!=std::string::npos || driver.find("lavapipe")!=std::string::npos) && !std::getenv("PGR1_ALLOW_SOFTWARE")) {
+        std::fprintf(stderr,"Software GL renderer: %s. Set PGR1_ALLOW_SOFTWARE=1 for explicit diagnostics.\n",driver.c_str());
+        SDL_GL_DestroyContext(gl); SDL_DestroyWindow(window); SDL_Quit(); return 2;
+    }
     auto renderer = std::make_unique<pgr::gldirect::Renderer>([](const char* name) {
         return reinterpret_cast<pgr::gldirect::Renderer::Proc>(SDL_GL_GetProcAddress(name));
     });
     if (!renderer->Init()) { renderer.reset(); SDL_GL_DestroyContext(gl); SDL_DestroyWindow(window); SDL_Quit(); return 1; }
-    std::puts("Experimental GPU rendering: FVF XYZRHW; unsupported shaders/states are logged.");
+    renderer->SetAspect(app::FrameAspect());
+    std::puts("Experimental GPU rendering: SDK shaders through HLSL/SPIR-V/GLSL; unsupported states are logged.");
     std::puts("DualShock 4 and keyboard controls are forwarded. Esc closes the process.");
     std::fflush(stdout);
-    SDL_GL_SetSwapInterval(1);
+    SDL_GL_SetSwapInterval(std::getenv("PGR1_VSYNC") ? std::atoi(std::getenv("PGR1_VSYNC")) : 1);
     SDL_Gamepad* pad = OpenFirstPad();
 
     std::atomic<bool> boot_failed{false};
     std::thread(BootGame, game, std::ref(boot_failed)).detach();
 
+    const char* script_mode=std::getenv("PGR1_SCRIPT_ONLY");
+    const bool script_only=script_mode && *script_mode && *script_mode!='0';
+    if(script_only) std::puts("Automated benchmark: forwarding SCRIPT only; Escape/F11 remain active.");
     Keys keys;
     bool running = true, had_input = false;
     auto now = std::chrono::steady_clock::now();
     auto next_input = now, next_pad_scan = now, next_title = now;
-    pgr::gldirect::Submission frame{};
+    pgr::gldirect::Submission frame{}, pending{};
+    double pending_execute_ms=0;
+    std::ofstream timings("frames.csv"), gpu_times("gpu.csv");
+    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,queue_wait_ms,execute_ms,present_ms,supported_draws,rejected_draws\n";
+    gpu_times<<"frame,gpu_ms\n";
+    const auto started=std::chrono::steady_clock::now(); auto last_frame=started;
+    std::clock_t last_cpu=std::clock();
+    const double seconds=std::getenv("PGR1_RUN_SECONDS") ? std::atof(std::getenv("PGR1_RUN_SECONDS")) : 0;
+    auto ms=[](auto duration) { return std::chrono::duration<double,std::milli>(duration).count(); };
     while (running && !boot_failed.load()) {
         SDL_Event event{};
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) running = false;
             else if (event.type == SDL_EVENT_KEY_DOWN) {
                 if (event.key.scancode == SDL_SCANCODE_ESCAPE) running = false;
+                else if(event.key.scancode == SDL_SCANCODE_F11) SDL_SetWindowFullscreen(window,!(SDL_GetWindowFlags(window)&SDL_WINDOW_FULLSCREEN));
                 else keys.down.insert(event.key.scancode);
             } else if (event.type == SDL_EVENT_KEY_UP) keys.down.erase(event.key.scancode);
         }
         now = std::chrono::steady_clock::now();
+        if(seconds>0 && std::chrono::duration<double>(now-started).count()>=seconds) break;
+        if(const auto error=pgr::gldirect::Failure(); !error.empty()) { std::fprintf(stderr,"gldirect: %s\n",error.c_str()); boot_failed=true; break; }
         if (now >= next_pad_scan) {
             if (pad && !SDL_GamepadConnected(pad)) { SDL_CloseGamepad(pad); pad = nullptr; }
             if (!pad) pad = OpenFirstPad();
             next_pad_scan = now + std::chrono::seconds(1);
         }
-        if (now >= next_input) {
+        if (now >= next_input && !script_only) {
             std::string tokens = InputTokens(keys, pad);
             if (!tokens.empty() || had_input) SendCommand(tokens);
             had_input = !tokens.empty();
             next_input = now + std::chrono::milliseconds(65);
         }
         pgr::gldirect::Submission next;
-        if (pgr::gldirect::Take(next)) {
+        bool took=pgr::gldirect::Take(next), presented=false; double execute_ms=0,frame_ms=0,cpu_ms=0;
+        if (took) {
+            const auto before=std::chrono::steady_clock::now();
+            presented=next.present;
+            if(presented) { frame_ms=ms(before-last_frame); last_frame=before; auto cpu=std::clock(); cpu_ms=1000.0*double(cpu-last_cpu)/CLOCKS_PER_SEC; last_cpu=cpu; }
             if (!renderer->Execute(next)) { boot_failed=true; break; }
-            frame=std::move(next);
-            frame.commands.clear();
+            pending_execute_ms+=ms(std::chrono::steady_clock::now()-before);
+            pending.draw_ns+=next.draw_ns; pending.decode_ns+=next.decode_ns;
+            pending.max_draw_ns=std::max(pending.max_draw_ns,next.max_draw_ns);
+            pending.queue_wait_ns+=next.queue_wait_ns; pending.supported+=next.supported; pending.rejected_draws+=next.rejected_draws;
+            if(presented) {
+                frame=std::move(next); frame.commands.clear();
+                frame.draw_ns=pending.draw_ns; frame.decode_ns=pending.decode_ns; frame.max_draw_ns=pending.max_draw_ns;
+                frame.queue_wait_ns=pending.queue_wait_ns; frame.supported=pending.supported; frame.rejected_draws=pending.rejected_draws;
+                execute_ms=pending_execute_ms; pending={}; pending_execute_ms=0;
+            }
         }
         int w=0, h=0;
         SDL_GetWindowSizeInPixels(window, &w, &h);
-        if (!renderer->Present(w,h)) { boot_failed=true; break; }
-        if (!SDL_GL_SwapWindow(window)) {
+        const auto before_present=std::chrono::steady_clock::now();
+        if ((!took || presented) && !renderer->Present(w,h)) { boot_failed=true; break; }
+        if ((!took || presented) && !SDL_GL_SwapWindow(window)) {
             std::fprintf(stderr, "SDL_GL_SwapWindow failed: %s\n", SDL_GetError());
             boot_failed=true;
             break;
         }
+        if(presented && !frame.reference_pixels.empty()) { renderer->Compare(frame); frame.reference_pixels.clear(); }
+        if(presented) timings<<frame.frame<<','<<frame_ms<<','<<cpu_ms<<','<<frame.draw_ns/1e6<<','<<frame.max_draw_ns/1e6<<','<<frame.decode_ns/1e6<<','<<frame.queue_wait_ns/1e6<<','<<execute_ms<<','<<ms(std::chrono::steady_clock::now()-before_present)<<','<<frame.supported<<','<<frame.rejected_draws<<'\n';
+        for(auto sample:renderer->PollGpu()) gpu_times<<sample.frame<<','<<sample.nanoseconds/1e6<<'\n';
         if (now >= next_title) {
+            timings.flush(); gpu_times.flush(); logx::Flush();
+            if(fs::is_regular_file("snap")) {
+                if(!renderer->Capture("snap.ppm")) std::fputs("gldirect: requested snapshot failed\n",stderr);
+                std::error_code error; fs::remove("snap",error);
+            }
             char title[240];
             std::snprintf(title, sizeof(title),
                 "PGR1 OpenGL | frames %llu | draws %llu | unsupported operations %llu",
@@ -212,9 +261,13 @@ int main(int argc, char** argv) {
             SDL_SetWindowTitle(window, title);
             next_title = now + std::chrono::milliseconds(500);
         }
-        SDL_Delay(4);
+        if(!took || presented) SDL_Delay(1);
     }
+    if(const char* capture=std::getenv("PGR1_CAPTURE"); capture && !renderer->Capture(capture)) std::fprintf(stderr,"gldirect: capture failed\n");
+    timings.flush(); gpu_times.flush(); logx::Flush();
     pgr::gldirect::Stop();
+    pgr::gldirect::StopAudio();
+    logx::Flush();
     if (had_input) SendCommand("");
     if (pad) SDL_CloseGamepad(pad);
     renderer.reset();

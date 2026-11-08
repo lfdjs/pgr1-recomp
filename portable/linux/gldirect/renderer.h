@@ -14,6 +14,11 @@ public:
     bool Init();
     bool Execute(const Submission& frame);
     bool Present(int width, int height);
+    void SetAspect(float aspect);
+    struct GpuTime { std::uint64_t frame, nanoseconds; };
+    std::vector<GpuTime> PollGpu();
+    bool Capture(const char* path);
+    void Compare(const Submission& frame);
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;

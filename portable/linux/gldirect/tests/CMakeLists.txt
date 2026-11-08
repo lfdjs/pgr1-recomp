@@ -27,7 +27,8 @@ foreach(target pgr1_gldirect_bridge_test pgr1_gldirect_commands_test pgr1_gldire
 endforeach()
 set(PGR1_SDK_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../../sdk" CACHE PATH "SDK checkout used for real assembly/decoder tests")
 if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/vertex.cpp")
-    add_executable(pgr1_gldirect_backend_test ../backend.cpp ../commands.cpp backend_test.cpp
+    add_executable(pgr1_gldirect_backend_test ../backend.cpp ../commands.cpp ../shader_compiler.cpp ../draw_constants.cpp backend_test.cpp
+        "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/shaders.cpp"
         "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/vertex.cpp"
         "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/texture.cpp")
     target_include_directories(pgr1_gldirect_backend_test PRIVATE
@@ -37,6 +38,14 @@ if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/vertex.cpp")
     target_link_options(pgr1_gldirect_backend_test PRIVATE -Wl,--gc-sections)
     target_link_libraries(pgr1_gldirect_backend_test PRIVATE Threads::Threads)
     add_test(NAME sdk_backend_capture COMMAND pgr1_gldirect_backend_test)
+    set_tests_properties(sdk_backend_capture PROPERTIES TIMEOUT 30)
 else()
     message(STATUS "SDK unavailable: sdk_backend_capture is omitted; set PGR1_SDK_SOURCE_DIR to a compatible checkout")
+endif()
+
+if(TARGET pgr1_gldirect_renderer_test AND EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/shaders.cpp")
+    target_sources(pgr1_gldirect_renderer_test PRIVATE ../shader_compiler.cpp ../draw_constants.cpp
+        "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/shaders.cpp")
+    target_include_directories(pgr1_gldirect_renderer_test PRIVATE "${PGR1_SDK_SOURCE_DIR}/runtime")
+    target_compile_definitions(pgr1_gldirect_renderer_test PRIVATE PGR1_TEST_SDK_SHADERS=1)
 endif()

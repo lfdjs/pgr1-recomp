@@ -29,3 +29,12 @@ settings.toml
 
 # harness frame captures (game imagery)
 /captures/
+
+# Portable generated shader/diagnostic caches
+__pycache__/
+/shadercache-gl-v1/
+/frames.csv
+/gpu.csv
+/compare.txt
+/compare-*.ppm
+/snap.ppm

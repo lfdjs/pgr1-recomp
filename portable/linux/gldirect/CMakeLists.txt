@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(pgr1_gldirect LANGUAGES CXX)
+project(pgr1_gldirect LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 get_filename_component(PGR1_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
@@ -16,29 +16,64 @@ if(NOT EXISTS "${PGR1_GENERATED_DIR}/x86_func_mapping.cpp")
     message(FATAL_ERROR "Missing generated game sources: run scripts/portable-dev.sh recompile first")
 endif()
 find_package(Threads REQUIRED)
+find_program(PGR1_GLSLANG_EXECUTABLE glslangValidator REQUIRED)
+find_program(PGR1_SPIRV_CROSS_EXECUTABLE spirv-cross REQUIRED)
 # The shell wrapper can reuse Stage 03A's library even without an installed SDL CMake package.
 if(PGR1_SDL_LIBRARY AND PGR1_SDL_INCLUDE)
     add_library(pgr1_sdl SHARED IMPORTED)
     set_target_properties(pgr1_sdl PROPERTIES IMPORTED_LOCATION "${PGR1_SDL_LIBRARY}"
         INTERFACE_INCLUDE_DIRECTORIES "${PGR1_SDL_INCLUDE}")
 else()
-    find_package(SDL3 3.2 REQUIRED CONFIG)
-    add_library(pgr1_sdl ALIAS SDL3::SDL3)
+    find_package(SDL3 3.2 QUIET CONFIG)
+    if(NOT TARGET SDL3::SDL3)
+        set(SDL_SHARED ON CACHE BOOL "" FORCE)
+        set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+        set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+        set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)
+        set(SDL_UNIX_CONSOLE_BUILD OFF CACHE BOOL "" FORCE)
+        set(SDL_RENDER OFF CACHE BOOL "" FORCE)
+        set(SDL_GPU OFF CACHE BOOL "" FORCE)
+        set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
+        if(EXISTS "${PGR1_ROOT}/build/linux/_deps/sdl3-src/CMakeLists.txt")
+            add_subdirectory("${PGR1_ROOT}/build/linux/_deps/sdl3-src" "${CMAKE_BINARY_DIR}/sdl3" EXCLUDE_FROM_ALL)
+        else()
+            include(FetchContent)
+            FetchContent_Declare(SDL3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+                GIT_TAG release-3.4.16 GIT_SHALLOW TRUE)
+            FetchContent_MakeAvailable(SDL3)
+        endif()
+    endif()
+    add_library(pgr1_sdl INTERFACE)
+    target_link_libraries(pgr1_sdl INTERFACE SDL3::SDL3)
 endif()
 file(GLOB runtime_sources CONFIGURE_DEPENDS "${PGR1_SDK_SOURCE_DIR}/runtime/*/*.cpp")
 # Match the original headless harness substitutions, without modifying its build script.
 list(FILTER runtime_sources EXCLUDE REGEX "/runtime/app/|/core/input.cpp$|/core/wheel.cpp$|/gpu/d3d12.cpp$|/gpu/d3d11.cpp$|/gpu/d3d_common.cpp$|/audio/xaudio2.cpp$")
 file(GLOB harness_sources CONFIGURE_DEPENDS "${PGR1_SDK_SOURCE_DIR}/harness/*.cpp")
-list(FILTER harness_sources EXCLUDE REGEX "/main_test.cpp$|/null_backend.cpp$")
+list(FILTER harness_sources EXCLUDE REGEX "/main_test.cpp$|/null_backend.cpp$|/null_audio.cpp$")
 file(GLOB game_sources CONFIGURE_DEPENDS "${PGR1_ROOT}/src/common/*.cpp" "${PGR1_ROOT}/src/game/*.cpp")
 file(GLOB generated_sources CONFIGURE_DEPENDS "${PGR1_GENERATED_DIR}/x86_recomp.*.cpp" "${PGR1_GENERATED_DIR}/x86_func_mapping.cpp")
 add_library(pgr1_generated OBJECT ${generated_sources})
 target_include_directories(pgr1_generated PRIVATE "${PGR1_SDK_SOURCE_DIR}/runtime" "${PGR1_GENERATED_DIR}")
 target_compile_options(pgr1_generated PRIVATE -O1 -g0 -w -fno-strict-aliasing -march=x86-64-v2)
-add_executable(game main.cpp backend.cpp commands.cpp renderer.cpp
+add_executable(game main.cpp backend.cpp commands.cpp renderer.cpp shader_compiler.cpp draw_constants.cpp sdl_audio.cpp
     ${runtime_sources} ${harness_sources} ${game_sources} $<TARGET_OBJECTS:pgr1_generated>)
 target_include_directories(game PRIVATE "${PGR1_ROOT}/src" "${PGR1_SDK_SOURCE_DIR}/runtime"
     "${PGR1_SDK_SOURCE_DIR}/harness" "${PGR1_SDK_SOURCE_DIR}/harness/compat" "${PGR1_GENERATED_DIR}")
-target_compile_definitions(game PRIVATE PGR1_RELEASE=${PGR1_RELEASE} XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=0)
+target_compile_definitions(game PRIVATE PGR1_RELEASE=${PGR1_RELEASE} XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=0 PGR1_ENABLE_REFERENCE_COMPARE=1)
 target_compile_options(game PRIVATE -fno-strict-aliasing -march=x86-64-v2)
 target_link_libraries(game PRIVATE Threads::Threads pgr1_sdl)
+
+target_compile_definitions(game PRIVATE "PGR1_GLSLANG_EXECUTABLE=\"${PGR1_GLSLANG_EXECUTABLE}\""
+    "PGR1_SPIRV_CROSS_EXECUTABLE=\"${PGR1_SPIRV_CROSS_EXECUTABLE}\"")
+# Same runtime and generated code, explicitly selected CPU-reference profiling only.
+add_executable(reference_benchmark EXCLUDE_FROM_ALL
+    "${PGR1_ROOT}/portable/linux/perf/backend.cpp" "${PGR1_ROOT}/portable/linux/stream/frame_ipc.cpp"
+    "${PGR1_SDK_SOURCE_DIR}/harness/main_test.cpp" "${PGR1_SDK_SOURCE_DIR}/harness/null_audio.cpp"
+    ${runtime_sources} ${harness_sources} ${game_sources} $<TARGET_OBJECTS:pgr1_generated>)
+target_include_directories(reference_benchmark PRIVATE "${PGR1_ROOT}/src" "${PGR1_SDK_SOURCE_DIR}/runtime"
+    "${PGR1_SDK_SOURCE_DIR}/harness" "${PGR1_SDK_SOURCE_DIR}/harness/compat" "${PGR1_GENERATED_DIR}")
+target_compile_definitions(reference_benchmark PRIVATE PGR1_RELEASE=${PGR1_RELEASE} XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=0)
+target_compile_options(reference_benchmark PRIVATE -fno-strict-aliasing -march=x86-64-v2)
+target_link_libraries(reference_benchmark PRIVATE Threads::Threads)

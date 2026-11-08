@@ -6,6 +6,14 @@
 #include <cmath>
 #include <cstdio>
 #include <array>
+#include <cstring>
+#ifdef PGR1_TEST_SDK_SHADERS
+#include "../shader_compiler.h"
+#include "../draw_constants.h"
+#include "gpu/shaders.h"
+#include "app/app.h"
+namespace app { const GameInfo kGame{}; Settings& Get() { static Settings s; return s; } }
+#endif
 using namespace pgr::gldirect;
 namespace {
 Submission Frame(std::vector<Command> commands,unsigned front=1) {
@@ -97,6 +105,91 @@ int main() {
         assert(r.Execute(Frame({culled}))); assert(r.Present(32,32)); pixel(16,16,{255,0,0,255});
         auto opaque=Clear(0x0000ff00); opaque.target={5,0,32,32,true};
         assert(r.Execute(Frame({opaque},5))); assert(r.Present(32,32)); pixel(16,16,{0,255,0,255});
+        auto depth_clear=Clear(); depth_clear.z=.25f; depth_clear.stencil=7;
+        Command depth_read; depth_read.kind=Command::Kind::Readback; depth_read.target=depth_clear.target; depth_read.read_depth=true;
+        depth_read.readback=std::make_shared<std::promise<std::vector<uint32_t>>>(); auto depth_future=depth_read.readback->get_future();
+        assert(r.Execute(Frame({depth_clear,depth_read})));
+        const auto packed=depth_future.get()[0]; assert((packed&255)==7 && std::abs(int(packed>>8)-4194304)<=1);
+        auto odd_clear=Clear(); odd_clear.target={10,11,3,3,false,0x12,0x30}; odd_clear.z=.25f;
+        Command odd_read; odd_read.kind=Command::Kind::Readback; odd_read.target=odd_clear.target; odd_read.read_depth=true;
+        odd_read.readback=std::make_shared<std::promise<std::vector<uint32_t>>>(); auto odd_future=odd_read.readback->get_future();
+        assert(r.Execute(Frame({odd_clear,odd_read},10))); const auto odd_depth=odd_future.get();
+        assert(odd_depth.size()==9); for(auto z:odd_depth) assert(std::abs(int(z)-16384)<=1);
+#ifdef PGR1_TEST_SDK_SHADERS
+        gpu::State state;
+        for(auto& stage:state.tss) stage[gpu::kTssColorOp]=1;
+        state.viewport={0,0,32,32,0,1};
+        auto generated=Quad({0,1,0,1});
+        for(auto& v:generated.vertices) { v.attributes[0]=v.position; v.attributes[3]=v.color; }
+        auto pair=std::make_shared<ShaderPair>();
+        pair->vertex=CompileHlsl(gpu::FixedVertexHlsl(9,true),true);
+        gpu::TexInfo info[4]{};
+        pair->fragment=CompileHlsl(gpu::PixelHlsl(gpu::MakePixelKey(state,info)),false);
+        generated.shaders=pair;
+        auto dc=Constants(state,32,32,false);
+        generated.draw_constants.resize(sizeof(dc)); std::memcpy(generated.draw_constants.data(),&dc,sizeof(dc));
+        assert(r.Execute(Frame({Clear(),generated}))); assert(r.Present(32,32)); pixel(16,16,{0,255,0,255});
+        generated.pipeline.viewport={4,4,8,8};
+        assert(r.Execute(Frame({Clear(),generated}))); assert(r.Present(32,32));
+        pixel(2,2,{0,0,0,255}); pixel(6,6,{0,255,0,255});
+        generated.pipeline.viewport={0,0,32,32};
+        assert(r.Execute(Frame({Clear(),generated}))); assert(r.Present(32,32));
+        // GPU CopyRects and color/depth readback execute in the same ordered stream.
+        Command copy; copy.kind=Command::Kind::Copy; copy.source=1; copy.source_height=32;
+        copy.target={8,0,32,32}; copy.rects={{0,0,32,32}}; copy.destination_rects={{0,0,32,32}};
+        Command readback; readback.kind=Command::Kind::Readback; readback.target=copy.target;
+        readback.readback=std::make_shared<std::promise<std::vector<uint32_t>>>(); auto future=readback.readback->get_future();
+        assert(r.Execute(Frame({copy,readback},8))); assert(r.Present(32,32)); pixel(16,16,{0,255,0,255});
+        assert(future.get()[16*32+16]==0xff00ff00);
+        // A partial batch preserves the last present identity.
+        auto partial_clear=Clear(0xffff0000); partial_clear.target={8,0,32,32};
+        auto partial=Frame({partial_clear},8); partial.present=false;
+        assert(r.Execute(partial)); assert(r.Present(32,32)); pixel(16,16,{0,255,0,255});
+        assert(r.Execute(Frame({copy},8)));
+        // Cube face 0 updated from a 2D GPU surface must remain a cube GL object.
+        auto cube_pixels=std::make_shared<TexturePixels>(); cube_pixels->levels.resize(6,std::vector<uint32_t>{0xff0000ff});
+        auto cube_draw=generated; cube_draw.target={9,0,32,32};
+        cube_draw.textures[0].cube=true; cube_draw.textures[0].width=cube_draw.textures[0].height=1;
+        cube_draw.textures[0].pixels=cube_pixels; cube_draw.textures[0].face_targets[0]=8;
+        gpu::TexInfo cube_info[4]{}; cube_info[0].kind=gpu::kTexCube;
+        state.tss[0][gpu::kTssColorOp]=state.tss[0][gpu::kTssAlphaOp]=2;
+        state.tss[0][gpu::kTssColorArg1]=state.tss[0][gpu::kTssAlphaArg1]=2;
+        auto cube_pair=std::make_shared<ShaderPair>(); cube_pair->vertex=CompileHlsl(gpu::FixedVertexHlsl(0x209,true),true);
+        cube_pair->fragment=CompileHlsl(gpu::PixelHlsl(gpu::MakePixelKey(state,cube_info)),false);
+        cube_draw.shaders=cube_pair;
+        for(auto& v:cube_draw.vertices) v.attributes[9]={1,0,0,1};
+        assert(r.Execute(Frame({cube_draw},9))); assert(r.Present(32,32)); pixel(16,16,{0,255,0,255});
+        // Real NV2A MOV instructions, decoded by SDK, executed by the GL vertex stage.
+        std::vector<uint32_t> program={0,(1u<<21)|0x1b,2u<<26,(15u<<12)|(1u<<11),
+                                      0,(1u<<21)|(3u<<9)|0x1b,2u<<26,(15u<<12)|(1u<<11)|(3u<<3)|1};
+        auto nv=std::make_shared<ShaderPair>(); nv->vertex=CompileHlsl(gpu::VertexProgramHlsl(program,9),true); nv->fragment=pair->fragment;
+        generated.shaders=nv;
+        for(auto& v:generated.vertices) v.attributes[0][2]=.5f*state.zscale;
+        assert(r.Execute(Frame({Clear(),generated}))); assert(r.Present(32,32)); pixel(16,16,{0,255,0,255});
+#endif
+#ifdef PGR1_TEST_SDK_SHADERS
+        // Exercise cache eviction with four sampled stages. Evicting after stage 0
+        // was bound made that stage black in the same draw on the real renderer.
+        auto cache_pair=std::make_shared<ShaderPair>(); cache_pair->vertex=pair->vertex;
+        cache_pair->fragment=R"(#version 330
+uniform sampler2D SPIRV_Cross_Combinedtex0smp0,SPIRV_Cross_Combinedtex1smp1,SPIRV_Cross_Combinedtex2smp2,SPIRV_Cross_Combinedtex3smp3;
+out vec4 color;
+void main() { color=(texture(SPIRV_Cross_Combinedtex0smp0,vec2(.5))+texture(SPIRV_Cross_Combinedtex1smp1,vec2(.5))+texture(SPIRV_Cross_Combinedtex2smp2,vec2(.5))+texture(SPIRV_Cross_Combinedtex3smp3,vec2(.5)))*.25; }
+)";
+        auto cache_draw=generated; cache_draw.shaders=cache_pair;
+        for(auto& v:cache_draw.vertices) v.attributes[0]=v.position;
+        for(unsigned iteration=0;iteration<70;iteration++) {
+            for(auto& t:cache_draw.textures) { t.width=t.height=1; auto pixels=std::make_shared<TexturePixels>(); pixels->levels={{0xff00ff00}}; t.pixels=pixels; }
+            assert(r.Execute(Frame({cache_draw}))); assert(r.Present(32,32)); pixel(16,16,{0,255,0,255});
+            r.PollGpu();
+        }
+        auto face_pair=std::make_shared<ShaderPair>(); face_pair->vertex=pair->vertex;
+        face_pair->fragment="#version 330\nout vec4 color; void main() { color=gl_FrontFacing?vec4(0,1,0,1):vec4(1,0,0,1); }";
+        cache_draw.shaders=face_pair; cache_draw.pipeline.front=GL_CW;
+        assert(r.Execute(Frame({cache_draw}))); assert(r.Present(32,32)); pixel(16,16,{0,255,0,255});
+        cache_draw.pipeline.front=GL_CCW;
+        assert(r.Execute(Frame({cache_draw}))); assert(r.Present(32,32)); pixel(16,16,{255,0,0,255});
+#endif
         assert(r.Present(0,0));
     }
     eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);

@@ -5,16 +5,19 @@
 #include "gpu/texture.h"
 #include "kernel/kernel.h"
 #include "core/log.h"
+#include "app/app.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <thread>
 namespace { std::vector<uint8_t> memory(1<<20); }
 namespace kernel { uint8_t* g_base=memory.data(); }
 namespace mem {
 bool IsCommitted(uint32_t va) { return va<memory.size(); }
 uint32_t VirtualFromPhysical(uint32_t pa) { return pa; }
 }
+namespace app { const GameInfo kGame{}; float FrameAspect() { return 4.0f/3; } Settings& Get() { static Settings s; return s; } }
 namespace logx { void Write(Level,const char*,...) {} }
 using namespace pgr::gldirect;
 int main() {
@@ -42,6 +45,18 @@ int main() {
     assert(c.indices==std::vector<uint32_t>({0,1,2,0,2,3}));
     assert(c.vertices[0].color[0]==1 && c.vertices[0].color[2]==0);
     assert(f.commands[0].rects[0].w==32 && f.front==0x10000);
+    // size=0 is an exact resource lookup, not a one-byte overlapping range.
+    backend->Sync(s.rt.data+4,0); assert(!Take(f));
+    std::thread sync([&] { backend->Sync(s.rt.data,0); });
+    while(!Take(f)) std::this_thread::yield();
+    assert(!f.present && f.commands.back().kind==Command::Kind::Readback);
+    f.commands.back().readback->set_value(std::vector<uint32_t>(1024,0xffabcdef)); sync.join();
+    assert(kernel::R32(s.rt.data)==0xffabcdef);
+    backend->Sync(s.rt.data,0); assert(!Take(f)); // no new GPU writes: no redundant stall
+    backend->SyncLate(s.rt.data); backend->Flush(); assert(Take(f));
+    f.commands.back().readback->set_value(std::vector<uint32_t>(1024,0xff123456));
+    backend->SyncLate(s.rt.data); assert(kernel::R32(s.rt.data)==0xff123456);
+    backend->Flush(); assert(Take(f)); f.commands.back().readback->set_value(std::vector<uint32_t>(1024,0xff123456));
     // Producer memory can change immediately after Draw, including a 16-bit index buffer.
     uint16_t ix[]={3,2,1}; backend->Draw(s,5,0,3,reinterpret_cast<uint8_t*>(ix));
     ix[0]=0; std::memset(kernel::HostPtr(0x30000),0,sizeof(vertices)); backend->Present(s.rt);
@@ -56,11 +71,24 @@ int main() {
     t[gpu::kTssColorOp]=t[gpu::kTssAlphaOp]=4; t[gpu::kTssColorArg1]=t[gpu::kTssAlphaArg1]=2;
     t[gpu::kTssAddressU]=t[gpu::kTssAddressV]=3; t[gpu::kTssMinFilter]=t[gpu::kTssMagFilter]=1;
     backend->Draw(s,8,0,4,nullptr); backend->Present(s.rt); assert(Take(f));
-    assert(f.commands.size()==1 && f.commands[0].texture.bgra.size()==1024);
-    assert(f.commands[0].texture.bgra[0]==0xff123456);
+    assert(f.commands.size()==1 && f.commands[0].textures[0].pixels->levels[0].size()==1024);
+    assert(f.commands[0].textures[0].pixels->levels[0][0]==0xff123456);
+    // A cube sharing face 0 with a GPU surface needs face composition, not a 2D bind.
+    kernel::W32(0x1304,s.rt.data); kernel::W32(0x130c,(0x06u<<8)|4|(5u<<20)|(5u<<24)); kernel::W32(0x1310,0);
+    backend->Draw(s,8,0,4,nullptr); backend->Present(s.rt); assert(Take(f));
+    assert(f.commands.size()==1 && f.commands[0].textures[0].cube);
+    assert(f.commands[0].textures[0].render_target==0 && f.commands[0].textures[0].face_targets[0]==s.rt.data);
     // Unsupported programmable work is explicitly counted and never replaced with a fake draw.
     s.vs_handle=1; backend->Draw(s,5,0,3,nullptr); backend->Present(s.rt); assert(Take(f));
     assert(f.commands.empty() && f.unsupported==1);
+    s.vs=std::make_shared<gpu::VertexShader>(); gpu::FvfInputs(0x44,*s.vs);
+    s.vs->program={0,(1u<<21)|0x1b,2u<<26,(15u<<12)|(1u<<11)|1};
+    s.vs->constants.push_back({100,{1,1,1,1}}); s.vsc[100]={2,3,4,5};
+    backend->Draw(s,5,0,3,nullptr); backend->Present(s.rt); assert(Take(f));
+    assert(f.commands.size()==1 && f.commands[0].vertex_constants[100][0]==2);
+    s.vs=std::make_shared<gpu::VertexShader>(); s.vs->program={0,14u<<21,0,1};
+    backend->Draw(s,5,0,3,nullptr); backend->Present(s.rt); assert(Take(f));
+    assert(f.commands.empty() && f.unsupported==2); // unknown opcode is recorded, never rendered as zero
     std::puts("SDK capture tests passed: FVF colors, quad topology, 16-bit indices, owned guest data, texture decode, unsupported shaders.");
     Stop();
 }
