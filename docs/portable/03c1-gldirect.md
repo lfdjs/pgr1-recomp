@@ -1,6 +1,8 @@
 # PGR1 Portable — 03C.1: single-process SDL3/OpenGL bridge
 
-**Experimental GPU diagnostic, NOT a playable graphical renderer.**
+**Historical stage description.** The implementation is now superseded by
+[the FVF geometry increment](03c2-gpu-geometry.md), including its validation limits.
+The instructions below describe the earlier clear-only prototype.
 
 The previous 03A/03B preview uses a CPU reference rasterizer, sends sampled pixels
 through mmap and displays them in a separate SDL3 process. This prototype instead

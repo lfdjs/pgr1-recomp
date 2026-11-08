@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PGR1 Portable 03C.1: one-process diagnostic OpenGL backend.
+# PGR1 Portable: single-process experimental OpenGL backend.
 # Builds in its own output directory. Existing 03A/03B and headless executables are not touched.
 set -Eeuo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,31 +40,21 @@ find_sdl() {
 
 build_game() {
   [[ -f generated/game/x86_func_mapping.cpp ]] || { echo 'Generate code first: scripts/portable-dev.sh recompile' >&2; exit 2; }
-  grep -q 'PGR1_EXTRA_LINK_LIB' sdk/harness/build.sh || { echo 'SDK linker extension missing: run Etapa 03C installer.' >&2; exit 2; }
   find_sdl
   local region
   region="$(region_define)"
-  echo "Building isolated 03C.1 GPU diagnostic executable (PGR1_RELEASE=$region)"
-  echo "SDL3 library: $SDL_SO"
-  mkdir -p "$OUT" .local/harness/gen
-  HOST_FLAGS="-DPGR1_RELEASE=$region -O2 -g0" \
-    PGR1_EXTRA_INCLUDE_DIR="$SDL_INCLUDE" \
-    PGR1_EXTRA_LINK_LIB="$SDL_SO" \
-    JOBS="${JOBS:-4}" bash sdk/harness/build.sh \
-      -r . -g generated/game -o "$OUT" -n game \
-      -G .local/harness/gen \
-      -x '/harness/main_test[.]cpp$' \
-      -x '/harness/null_backend[.]cpp$' \
-      -e portable/linux/gldirect/main.cpp \
-      -e portable/linux/gldirect/backend.cpp \
-      -e portable/linux/gldirect/bridge.cpp
+  echo "Building isolated GPU executable (PGR1_RELEASE=$region)"
+  cmake -S portable/linux/gldirect -B "$OUT" -DCMAKE_BUILD_TYPE=Release \
+    -DPGR1_RELEASE="$region" -DPGR1_SDL_INCLUDE="$SDL_INCLUDE" -DPGR1_SDL_LIBRARY="$SDL_SO"
+  cmake --build "$OUT" --parallel "${JOBS:-4}"
+
 }
 
 run_game() {
   [[ -x "$OUT/game" ]] || build_game
   find_sdl
   mkdir -p "$RUN/logs"
-  echo 'Starting PGR1: GPU-clear diagnostic only (no guest triangles/textures yet).'
+  echo 'Starting PGR1: experimental FVF XYZRHW GPU renderer.'
   echo 'DualShock 4 supported. SDL3 / OpenGL is now in the same process as the Xbox runtime.'
   echo 'Logs: .local/run/gldirect/logs and .local/gldirect.out'
   (
@@ -85,13 +75,13 @@ case "${1:-help}" in
   test) tests ;;
   help|-h|--help)
     cat <<'HELP'
-PGR1 03C.1: direct single-process SDL3/OpenGL GPU diagnostic
-  bash scripts/portable-gldirect.sh test        # atomic game->GL frame bridge test
+PGR1: direct single-process SDL3/OpenGL experimental renderer
+  bash scripts/portable-gldirect.sh test        # bridge, owned commands, optional EGL pixel and SDK tests
   JOBS=4 bash scripts/portable-gldirect.sh build-game
-  bash scripts/portable-gldirect.sh run         # solid colors, stats in title, PS4 input
+  bash scripts/portable-gldirect.sh run         # experimental geometry/textures, PS4 input
 
-IMPORTANT: guest Draw is counted, not rendered. This is intentionally not a playable
-GPU backend. Preserve 03B reference preview as a way to see the actual game graphics.
+FVF XYZRHW draws use the GPU. Programmable shaders remain unsupported and logged.
+Preserve 03B reference preview for comparison.
 HELP
     ;;
   *) echo "Unknown action: $1" >&2; exit 2 ;;

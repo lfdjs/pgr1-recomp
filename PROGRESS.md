@@ -3,6 +3,8 @@
 Newest first. Each entry: date, what changed, what was learned, what's next.
 
 ## Status
+- Portable OpenGL: FVF XYZRHW GPU path and EGL pixel tests implemented; see docs/portable/03c2-gpu-geometry.md.
+  Game scenes unvalidated: assets/generated code absent and the portable SDK gitlink is unavailable upstream.
 - Milestone: plays on Windows (Harry): races, sound, shadows, widescreen and ultrawide, skip intro, FOV, hide HUD
   checked; SMOKE OK headless (first boot, profile, arcade race)
 - Achievements: 31 (ACHIEVEMENTS.md), conditions in src/game/achievement_set.cpp, tested headless with pokes
@@ -17,6 +19,17 @@ Newest first. Each entry: date, what changed, what was learned, what's next.
 - Plan: .local/PGR1-plan.md (detailed, not committed) and .local/PGR1-summary.md
 
 ## Log
+
+### 2026-11-08 - portable OpenGL FVF geometry
+
+Replaced discarded Draw calls with owned SDK Assemble geometry, ordered main-thread GL commands,
+per-surface FBOs, depth/stencil/blend/scissor/clear state and basic decoded stage-0 textures.
+Added isolated CMake game build, avoiding patches to the original harness and preserving PS4 input.
+Four graphics tests (including EGL pixel readback and real SDK assembly/decoder fixtures) and host
+services test pass. No game build/scene/FPS claim: assets and generated sources absent. The pinned
+SDK 2ef2954 is missing from its configured remote; validation used temporary SDK 77b18eb, gitlink unchanged.
+Native Vulkan remains future work; commands are API-neutral. Zink could not select a Vulkan device. Next: restore pinned SDK,
+run USA scene diagnostics, translate actual vertex programs/combiners. Details: docs/portable/03c2-gpu-geometry.md.
 
 ### 2026-11-04 - release 1.5
 

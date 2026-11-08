@@ -1,6 +1,6 @@
 // PGR1 03C.1: a single Linux process for the recompiled game and SDL3/OpenGL.
 // SDL video + GL are owned by the MAIN thread, while the game boots on a worker.
-// This deliberately presents ONLY GPU-clear diagnostics, NOT guest geometry.
+// Owned Xbox draw commands are executed on this thread using OpenGL 3.3.
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
@@ -24,12 +24,12 @@
 #include "core/log.h"
 #include "kernel/kernel.h"
 #include "image_symbols.h"
-#include "bridge.h"
+#include "commands.h"
+#include "renderer.h"
 
 namespace fs = std::filesystem;
 namespace {
 using GLenum = unsigned int;
-constexpr GLenum kColorBufferBit = 0x00004000u;
 constexpr GLenum kVendor = 0x1F00u, kRenderer = 0x1F01u, kVersion = 0x1F02u;
 
 struct Keys {
@@ -137,22 +137,23 @@ int main(int argc, char** argv) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_Window* window = SDL_CreateWindow("PGR1 - Linux OpenGL direct (DIAGNOSTIC)", 960, 720,
+    SDL_Window* window = SDL_CreateWindow("PGR1 - Linux OpenGL (experimental)", 960, 720,
                                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL);
     if (!window) { std::fprintf(stderr, "SDL window: %s\n", SDL_GetError()); SDL_Quit(); return 1; }
     SDL_GLContext gl = SDL_GL_CreateContext(window);
     if (!gl) { std::fprintf(stderr, "OpenGL context: %s\n", SDL_GetError()); SDL_DestroyWindow(window); SDL_Quit(); return 1; }
-    auto glClearColor = reinterpret_cast<void (*)(float,float,float,float)>(SDL_GL_GetProcAddress("glClearColor"));
-    auto glClear = reinterpret_cast<void (*)(GLenum)>(SDL_GL_GetProcAddress("glClear"));
-    auto glViewport = reinterpret_cast<void (*)(int,int,int,int)>(SDL_GL_GetProcAddress("glViewport"));
     auto glGetString = reinterpret_cast<const unsigned char* (*)(GLenum)>(SDL_GL_GetProcAddress("glGetString"));
-    if (!glClearColor || !glClear || !glViewport || !glGetString) {
-        std::fprintf(stderr, "gldirect: OpenGL 3.3 clear/present functions unavailable\n");
+    if (!glGetString) {
+        std::fprintf(stderr, "gldirect: OpenGL glGetString unavailable\n");
         SDL_GL_DestroyContext(gl); SDL_DestroyWindow(window); SDL_Quit(); return 1;
     }
-    std::printf("PGR1 03C.1 diagnostic: GL vendor=%s; renderer=%s; version=%s\n",
+    std::printf("PGR1 OpenGL: GL vendor=%s; renderer=%s; version=%s\n",
                 glGetString(kVendor), glGetString(kRenderer), glGetString(kVersion));
-    std::puts("DIAGNOSTIC ONLY: the GPU shows guest clear colors; game meshes/textures are NOT drawn yet.");
+    auto renderer = std::make_unique<pgr::gldirect::Renderer>([](const char* name) {
+        return reinterpret_cast<pgr::gldirect::Renderer::Proc>(SDL_GL_GetProcAddress(name));
+    });
+    if (!renderer->Init()) { renderer.reset(); SDL_GL_DestroyContext(gl); SDL_DestroyWindow(window); SDL_Quit(); return 1; }
+    std::puts("Experimental GPU rendering: FVF XYZRHW; unsupported shaders/states are logged.");
     std::puts("DualShock 4 and keyboard controls are forwarded. Esc closes the process.");
     std::fflush(stdout);
     SDL_GL_SetSwapInterval(1);
@@ -165,7 +166,7 @@ int main(int argc, char** argv) {
     bool running = true, had_input = false;
     auto now = std::chrono::steady_clock::now();
     auto next_input = now, next_pad_scan = now, next_title = now;
-    pgr::gldirect::Frame frame{};
+    pgr::gldirect::Submission frame{};
     while (running && !boot_failed.load()) {
         SDL_Event event{};
         while (SDL_PollEvent(&event)) {
@@ -187,32 +188,36 @@ int main(int argc, char** argv) {
             had_input = !tokens.empty();
             next_input = now + std::chrono::milliseconds(65);
         }
-        pgr::gldirect::Latest(frame);
-        int w = 0, h = 0;
+        pgr::gldirect::Submission next;
+        if (pgr::gldirect::Take(next)) {
+            if (!renderer->Execute(next)) { boot_failed=true; break; }
+            frame=std::move(next);
+            frame.commands.clear();
+        }
+        int w=0, h=0;
         SDL_GetWindowSizeInPixels(window, &w, &h);
-        glViewport(0, 0, w, h);
-        const auto color = frame.had_color_clear ? frame.last_color : 0xFF101929u;
-        const auto channel = [&](unsigned shift) { return float((color >> shift) & 0xFFu) / 255.0f; };
-        glClearColor(channel(16), channel(8), channel(0), 1.0f);
-        glClear(kColorBufferBit);
+        if (!renderer->Present(w,h)) { boot_failed=true; break; }
         if (!SDL_GL_SwapWindow(window)) {
             std::fprintf(stderr, "SDL_GL_SwapWindow failed: %s\n", SDL_GetError());
+            boot_failed=true;
             break;
         }
         if (now >= next_title) {
             char title[240];
             std::snprintf(title, sizeof(title),
-                "PGR1 GPU DIAGNOSTIC | guest frames %llu | draws %llu (NOT rendered) | clears %llu",
-                static_cast<unsigned long long>(frame.number),
-                static_cast<unsigned long long>(frame.total_draws),
-                static_cast<unsigned long long>(frame.total_clears));
+                "PGR1 OpenGL | frames %llu | draws %llu | unsupported operations %llu",
+                static_cast<unsigned long long>(frame.frame),
+                static_cast<unsigned long long>(frame.draws),
+                static_cast<unsigned long long>(frame.unsupported));
             SDL_SetWindowTitle(window, title);
             next_title = now + std::chrono::milliseconds(500);
         }
         SDL_Delay(4);
     }
+    pgr::gldirect::Stop();
     if (had_input) SendCommand("");
     if (pad) SDL_CloseGamepad(pad);
+    renderer.reset();
     SDL_GL_DestroyContext(gl);
     SDL_DestroyWindow(window);
     SDL_Quit();
