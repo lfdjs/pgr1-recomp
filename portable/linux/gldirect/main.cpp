@@ -1,6 +1,6 @@
 // PGR1 03C.1: a single Linux process for the recompiled game and SDL3/OpenGL.
 // SDL video + GL are owned by the MAIN thread, while the game boots on a worker.
-// Owned Xbox draw commands are executed on this thread using OpenGL 3.3.
+// Owned Xbox draw commands are executed on this thread using OpenGL 4.0.
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
@@ -28,6 +28,7 @@
 #include "commands.h"
 #include "renderer.h"
 #include "sdl_audio.h"
+#include "display.h"
 
 namespace fs = std::filesystem;
 namespace {
@@ -137,12 +138,26 @@ int main(int argc, char** argv) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1;
     }
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    const auto output=app::Output();
-    SDL_Window* window = SDL_CreateWindow("PGR1 - Linux OpenGL (experimental)", output.width, output.height,
-                                          SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL);
+    // SDL reports physical monitor pixels, while a high-density window's logical
+    // size can differ. Publish pixels before the Xbox TV/projection hooks boot.
+    const auto primary=SDL_GetPrimaryDisplay();
+    const auto* desktop=SDL_GetDesktopDisplayMode(primary);
+    unsigned width=desktop?unsigned(desktop->w):1280,height=desktop?unsigned(desktop->h):720;
+    pgr::gldirect::SetDesktopPixels(width,height);
+    const char* explicit_output=std::getenv("OUTPUT");
+    if(explicit_output) {
+        unsigned w=0,h=0;
+        if(std::sscanf(explicit_output,"%ux%u",&w,&h)==2 && w && h) { width=w;height=h; }
+    }
+    pgr::gldirect::SetOutputPixels(width,height);
+    const char* fullscreen_option=std::getenv("PGR1_FULLSCREEN");
+    const bool fullscreen=fullscreen_option ? *fullscreen_option!='0' : !explicit_output;
+    const SDL_WindowFlags flags=SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+                                (fullscreen?SDL_WINDOW_FULLSCREEN:0);
+    SDL_Window* window = SDL_CreateWindow("PGR1 - Linux OpenGL (experimental)", width, height,flags);
     if (!window) { std::fprintf(stderr, "SDL window: %s\n", SDL_GetError()); SDL_Quit(); return 1; }
     SDL_GLContext gl = SDL_GL_CreateContext(window);
     if (!gl) { std::fprintf(stderr, "OpenGL context: %s\n", SDL_GetError()); SDL_DestroyWindow(window); SDL_Quit(); return 1; }
@@ -166,7 +181,18 @@ int main(int argc, char** argv) {
         return reinterpret_cast<pgr::gldirect::Renderer::Proc>(SDL_GL_GetProcAddress(name));
     });
     if (!renderer->Init()) { renderer.reset(); SDL_GL_DestroyContext(gl); SDL_DestroyWindow(window); SDL_Quit(); return 1; }
-    renderer->SetAspect(app::FrameAspect());
+    int output_width=0,output_height=0;
+    auto update_output=[&] {
+        int w=0,h=0; SDL_GetWindowSizeInPixels(window,&w,&h);
+        if(w>0 && h>0 && (w!=output_width || h!=output_height)) {
+            output_width=w;output_height=h;
+            pgr::gldirect::SetOutputPixels(unsigned(w),unsigned(h));
+            renderer->SetAspect(app::FrameAspect());
+            renderer->SetOutputSize(unsigned(w),unsigned(h));
+            std::printf("SDL display %u: window pixels %dx%d, frame aspect %.4f\n",SDL_GetDisplayForWindow(window),w,h,app::FrameAspect());
+        }
+    };
+    update_output();
     std::puts("Experimental GPU rendering: SDK shaders through HLSL/SPIR-V/GLSL; unsupported states are logged.");
     std::puts("DualShock 4 and keyboard controls are forwarded. Esc closes the process.");
     std::fflush(stdout);
@@ -186,15 +212,18 @@ int main(int argc, char** argv) {
     pgr::gldirect::Submission frame{}, pending{};
     double pending_execute_ms=0;
     std::ofstream timings("frames.csv"), gpu_times("gpu.csv");
-    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,queue_wait_ms,execute_ms,present_ms,supported_draws,rejected_draws\n";
+    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,present_ms,supported_draws,rejected_draws\n";
     gpu_times<<"frame,gpu_ms\n";
     const auto started=std::chrono::steady_clock::now(); auto last_frame=started;
     std::clock_t last_cpu=std::clock();
     const double seconds=std::getenv("PGR1_RUN_SECONDS") ? std::atof(std::getenv("PGR1_RUN_SECONDS")) : 0;
     auto ms=[](auto duration) { return std::chrono::duration<double,std::milli>(duration).count(); };
     while (running && !boot_failed.load()) {
+        bool redraw=false;
         SDL_Event event{};
         while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_WINDOW_EXPOSED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
+                event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) redraw=true;
             if (event.type == SDL_EVENT_QUIT) running = false;
             else if (event.type == SDL_EVENT_KEY_DOWN) {
                 if (event.key.scancode == SDL_SCANCODE_ESCAPE) running = false;
@@ -216,6 +245,7 @@ int main(int argc, char** argv) {
             had_input = !tokens.empty();
             next_input = now + std::chrono::milliseconds(65);
         }
+        update_output();
         pgr::gldirect::Submission next;
         bool took=pgr::gldirect::Take(next), presented=false; double execute_ms=0,frame_ms=0,cpu_ms=0;
         if (took) {
@@ -225,11 +255,13 @@ int main(int argc, char** argv) {
             if (!renderer->Execute(next)) { boot_failed=true; break; }
             pending_execute_ms+=ms(std::chrono::steady_clock::now()-before);
             pending.draw_ns+=next.draw_ns; pending.decode_ns+=next.decode_ns;
+            pending.texture_check_ns+=next.texture_check_ns; pending.assemble_ns+=next.assemble_ns;
             pending.max_draw_ns=std::max(pending.max_draw_ns,next.max_draw_ns);
             pending.queue_wait_ns+=next.queue_wait_ns; pending.supported+=next.supported; pending.rejected_draws+=next.rejected_draws;
             if(presented) {
                 frame=std::move(next); frame.commands.clear();
                 frame.draw_ns=pending.draw_ns; frame.decode_ns=pending.decode_ns; frame.max_draw_ns=pending.max_draw_ns;
+                frame.texture_check_ns=pending.texture_check_ns; frame.assemble_ns=pending.assemble_ns;
                 frame.queue_wait_ns=pending.queue_wait_ns; frame.supported=pending.supported; frame.rejected_draws=pending.rejected_draws;
                 execute_ms=pending_execute_ms; pending={}; pending_execute_ms=0;
             }
@@ -237,14 +269,14 @@ int main(int argc, char** argv) {
         int w=0, h=0;
         SDL_GetWindowSizeInPixels(window, &w, &h);
         const auto before_present=std::chrono::steady_clock::now();
-        if ((!took || presented) && !renderer->Present(w,h)) { boot_failed=true; break; }
-        if ((!took || presented) && !SDL_GL_SwapWindow(window)) {
+        if ((presented || (!took && redraw)) && !renderer->Present(w,h)) { boot_failed=true; break; }
+        if ((presented || (!took && redraw)) && !SDL_GL_SwapWindow(window)) {
             std::fprintf(stderr, "SDL_GL_SwapWindow failed: %s\n", SDL_GetError());
             boot_failed=true;
             break;
         }
         if(presented && !frame.reference_pixels.empty()) { renderer->Compare(frame); frame.reference_pixels.clear(); }
-        if(presented) timings<<frame.frame<<','<<frame_ms<<','<<cpu_ms<<','<<frame.draw_ns/1e6<<','<<frame.max_draw_ns/1e6<<','<<frame.decode_ns/1e6<<','<<frame.queue_wait_ns/1e6<<','<<execute_ms<<','<<ms(std::chrono::steady_clock::now()-before_present)<<','<<frame.supported<<','<<frame.rejected_draws<<'\n';
+        if(presented) timings<<frame.frame<<','<<frame_ms<<','<<cpu_ms<<','<<frame.draw_ns/1e6<<','<<frame.max_draw_ns/1e6<<','<<frame.decode_ns/1e6<<','<<frame.texture_check_ns/1e6<<','<<frame.assemble_ns/1e6<<','<<frame.queue_wait_ns/1e6<<','<<execute_ms<<','<<ms(std::chrono::steady_clock::now()-before_present)<<','<<frame.supported<<','<<frame.rejected_draws<<'\n';
         for(auto sample:renderer->PollGpu()) gpu_times<<sample.frame<<','<<sample.nanoseconds/1e6<<'\n';
         if (now >= next_title) {
             timings.flush(); gpu_times.flush(); logx::Flush();
@@ -261,7 +293,10 @@ int main(int argc, char** argv) {
             SDL_SetWindowTitle(window, title);
             next_title = now + std::chrono::milliseconds(500);
         }
-        if(!took || presented) SDL_Delay(1);
+        // Waiting for a guest frame must not consume another blocking VSync.
+        // Swap only completed frames (or an expose), so a late submission does
+        // not miss its refresh because an unchanged image was swapped first.
+        if(!took) SDL_Delay(1);
     }
     if(const char* capture=std::getenv("PGR1_CAPTURE"); capture && !renderer->Capture(capture)) std::fprintf(stderr,"gldirect: capture failed\n");
     timings.flush(); gpu_times.flush(); logx::Flush();

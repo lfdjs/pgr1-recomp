@@ -27,6 +27,12 @@ foreach(target pgr1_gldirect_bridge_test pgr1_gldirect_commands_test pgr1_gldire
 endforeach()
 set(PGR1_SDK_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../../sdk" CACHE PATH "SDK checkout used for real assembly/decoder tests")
 if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/vertex.cpp")
+    add_executable(pgr1_gldirect_constants_test ../draw_constants.cpp draw_constants_test.cpp
+        "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/shaders.cpp")
+    target_include_directories(pgr1_gldirect_constants_test PRIVATE "${PGR1_SDK_SOURCE_DIR}/runtime")
+    target_compile_options(pgr1_gldirect_constants_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+    target_link_options(pgr1_gldirect_constants_test PRIVATE -Wl,--gc-sections)
+    add_test(NAME sdk_draw_constants COMMAND pgr1_gldirect_constants_test)
     add_executable(pgr1_gldirect_backend_test ../backend.cpp ../commands.cpp ../shader_compiler.cpp ../draw_constants.cpp backend_test.cpp
         "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/shaders.cpp"
         "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/vertex.cpp"

@@ -46,11 +46,11 @@ void Run(std::vector<std::string> args, const std::filesystem::path& log) {
 }
 std::string CompileHlsl(const std::string& source, bool vertex) {
     // Version salt covers lowering flags and interface naming, not guest addresses.
-    std::string input="// pgr1-cross-v1\n"+source;
+    std::string input="// pgr1-cross-v2-glsl400-precise\n"+source;
     uint64_t hash=1469598103934665603ull;
     for(unsigned char c:input) { hash^=c; hash*=1099511628211ull; }
     std::ostringstream name; name<<std::hex<<hash<<(vertex?".vert":".frag");
-    const auto dir=std::filesystem::current_path()/"shadercache-gl-v1";
+    const auto dir=std::filesystem::current_path()/"shadercache-gl-v2";
     std::filesystem::create_directories(dir);
     const auto base=dir/name.str();
     auto hlsl=base; hlsl+=".hlsl"; auto spv=base; spv+=".spv";
@@ -64,11 +64,15 @@ std::string CompileHlsl(const std::string& source, bool vertex) {
     { std::ofstream out(hlsl); out<<input; if(!out) throw std::runtime_error("Cannot write "+hlsl.string()); }
     Run({PGR1_GLSLANG_EXECUTABLE,"-D","-V","-S",vertex?"vert":"frag","-e","main","--hlsl-iomap",
          "--auto-map-bindings","--auto-map-locations",hlsl.string(),"-o",spv.string()},log);
-    std::vector<std::string> args={PGR1_SPIRV_CROSS_EXECUTABLE,spv.string(),"--version","330","--no-420pack-extension","--output",glsl.string()+".tmp"};
+    // GLSL 3.30 lowering silently drops SPIR-V NoContraction decorations, even
+    // with ARB_gpu_shader5 requested. The SDK marks position arithmetic precise
+    // because multipass EQUAL depth needs the same rounded results. GLSL 4.00
+    // preserves that precision contract on both native GL and Zink.
+    std::vector<std::string> args={PGR1_SPIRV_CROSS_EXECUTABLE,spv.string(),"--version","400","--no-420pack-extension","--output",glsl.string()+".tmp"};
     if(vertex) args.push_back("--fixup-clipspace");
     Run(std::move(args),log);
     auto output=Read(glsl.string()+".tmp");
-    // GLSL 3.3 links varyings by name. HLSL's semantic locations are identical
+    // GLSL 4.0 links these varyings by name. HLSL's semantic locations are identical
     // but SPIRV-Cross gives entry outputs and inputs different names.
     output=std::regex_replace(output,std::regex("_entryPointOutput_"),"varying_");
     output=std::regex_replace(output,std::regex("\\bi_(d[01]|b[01]|tc[0-3]|fogamt|wlin|psize)\\b"),"varying_$1");

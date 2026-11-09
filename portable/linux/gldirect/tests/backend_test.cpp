@@ -7,6 +7,8 @@
 #include "core/log.h"
 #include "app/app.h"
 #include <cassert>
+#include <bit>
+#include <bit>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -70,9 +72,39 @@ int main() {
     s.textures[0]=0x1300; auto& t=s.tss[0];
     t[gpu::kTssColorOp]=t[gpu::kTssAlphaOp]=4; t[gpu::kTssColorArg1]=t[gpu::kTssAlphaArg1]=2;
     t[gpu::kTssAddressU]=t[gpu::kTssAddressV]=3; t[gpu::kTssMinFilter]=t[gpu::kTssMagFilter]=1;
+    t[gpu::kTssAddressW]=2; t[gpu::kTssBorderColor]=0x80402010;
+    t[gpu::kTssMipLodBias]=std::bit_cast<uint32_t>(-.75f);
+    t[gpu::kTssMaxMipLevel]=1; t[gpu::kTssMaxAnisotropy]=8;
     backend->Draw(s,8,0,4,nullptr); backend->Present(s.rt); assert(Take(f));
     assert(f.commands.size()==1 && f.commands[0].textures[0].pixels->levels[0].size()==1024);
     assert(f.commands[0].textures[0].pixels->levels[0][0]==0xff123456);
+    const auto& sampler=f.commands[0].textures[0];
+    assert(sampler.wrap_w==2 && sampler.border_color==0x80402010);
+    assert(sampler.lod_bias==-.75f && sampler.max_mip==1 && sampler.max_anisotropy==8);
+    // Exact cache validation must detect unmarked CPU writes even within a
+    // single frame. Previously submitted draws retain the old immutable pixels.
+    backend->Draw(s,8,0,4,nullptr);
+    kernel::W32(0x40000+17*4,0xfffedcba);
+    backend->Draw(s,8,0,4,nullptr);
+    backend->Present(s.rt); assert(Take(f));
+    assert(f.commands.size()==2);
+    assert(f.commands[0].textures[0].pixels->levels[0][17]==0xff123456);
+    assert(f.commands[1].textures[0].pixels->levels[0][17]==0xfffedcba);
+    // Unchanged bytes share the decoded allocation, without rescanning a hash.
+    const auto retained=f.commands[1].textures[0].pixels;
+    backend->Draw(s,8,0,4,nullptr); backend->Present(s.rt); assert(Take(f));
+    assert(f.commands[0].textures[0].pixels==retained);
+    // Console depth-bias units depend on the physical depth format and apply
+    // to triangles only. D16 uses65535 steps instead of D24's16777215.
+    s.simple[gpu::kMSolidOffsetEnable/4]=1;
+    s.simple[gpu::kMDepthOffset/4]=std::bit_cast<uint32_t>(2.0f);
+    s.zscale=65535;
+    header(0x1100,0x20000,0x30);
+    backend->Draw(s,8,0,4,nullptr); backend->Draw(s,4,0,4,nullptr);
+    backend->Present(s.rt); assert(Take(f));
+    assert(f.commands[0].pipeline.depth_bias==2 && f.commands[1].pipeline.depth_bias==0);
+    s.simple[gpu::kMSolidOffsetEnable/4]=0;
+    header(0x1100,0x20000,0x2e);
     // A cube sharing face 0 with a GPU surface needs face composition, not a 2D bind.
     kernel::W32(0x1304,s.rt.data); kernel::W32(0x130c,(0x06u<<8)|4|(5u<<20)|(5u<<24)); kernel::W32(0x1310,0);
     backend->Draw(s,8,0,4,nullptr); backend->Present(s.rt); assert(Take(f));

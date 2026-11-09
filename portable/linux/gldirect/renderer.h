@@ -15,6 +15,8 @@ public:
     bool Execute(const Submission& frame);
     bool Present(int width, int height);
     void SetAspect(float aspect);
+    // Render screen surfaces at physical output pixels; small offscreen/cube targets stay native.
+    void SetOutputSize(unsigned width,unsigned height,unsigned guest_width=640,unsigned guest_height=480);
     struct GpuTime { std::uint64_t frame, nanoseconds; };
     std::vector<GpuTime> PollGpu();
     bool Capture(const char* path);

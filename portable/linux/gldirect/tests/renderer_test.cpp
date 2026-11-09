@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <array>
 #include <cstring>
+#include <fstream>
 #ifdef PGR1_TEST_SDK_SHADERS
 #include "../shader_compiler.h"
 #include "../draw_constants.h"
@@ -41,7 +42,7 @@ int main() {
     EGLConfig config; EGLint n; assert(eglChooseConfig(display,attrs,&config,1,&n) && n);
     EGLint surfaceAttrs[]={EGL_WIDTH,32,EGL_HEIGHT,32,EGL_NONE};
     EGLSurface surface=eglCreatePbufferSurface(display,config,surfaceAttrs); assert(surface!=EGL_NO_SURFACE);
-    EGLint contextAttrs[]={EGL_CONTEXT_MAJOR_VERSION,3,EGL_CONTEXT_MINOR_VERSION,3,EGL_CONTEXT_OPENGL_PROFILE_MASK,EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,EGL_NONE};
+    EGLint contextAttrs[]={EGL_CONTEXT_MAJOR_VERSION,4,EGL_CONTEXT_MINOR_VERSION,0,EGL_CONTEXT_OPENGL_PROFILE_MASK,EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,EGL_NONE};
     EGLContext context=eglCreateContext(display,config,EGL_NO_CONTEXT,contextAttrs); assert(context!=EGL_NO_CONTEXT);
     assert(eglMakeCurrent(display,surface,surface,context));
     auto info=reinterpret_cast<PFNGLGETSTRINGPROC>(eglGetProcAddress("glGetString"));
@@ -166,6 +167,20 @@ int main() {
         generated.shaders=nv;
         for(auto& v:generated.vertices) v.attributes[0][2]=.5f*state.zscale;
         assert(r.Execute(Frame({Clear(),generated}))); assert(r.Present(32,32)); pixel(16,16,{0,255,0,255});
+        // A real NV2A MAD lowers to NoContraction in SPIR-V. GLSL 3.30 used to
+        // discard it, allowing different rounding between EQUAL-depth passes.
+        // Keep precise through lowering and compile/link/execute it on real GL.
+        program={0,(4u<<21)|0x1b,(2u<<26)|(0x1bu<<17)|(3u<<11)|(0x1bu<<2),
+                 (3u<<28)|(15u<<12)|(1u<<11),
+                 0,(1u<<21)|(3u<<9)|0x1b,2u<<26,(15u<<12)|(1u<<11)|(3u<<3)|1};
+        auto precise=std::make_shared<ShaderPair>();
+        precise->vertex=CompileHlsl(gpu::VertexProgramHlsl(program,9),true);
+        precise->fragment=pair->fragment;
+        assert(precise->vertex.find("#version 400")!=std::string::npos);
+        assert(precise->vertex.find("precise ")!=std::string::npos);
+        generated.shaders=precise; generated.vertex_constants[0]={1,1,1,1};
+        for(auto& v:generated.vertices) { v.attributes[0][0]-=1; v.attributes[0][1]-=1; }
+        assert(r.Execute(Frame({Clear(),generated}))); assert(r.Present(32,32)); pixel(16,16,{0,255,0,255});
 #endif
 #ifdef PGR1_TEST_SDK_SHADERS
         // Exercise cache eviction with four sampled stages. Evicting after stage 0
@@ -183,6 +198,29 @@ void main() { color=(texture(SPIRV_Cross_Combinedtex0smp0,vec2(.5))+texture(SPIR
             assert(r.Execute(Frame({cache_draw}))); assert(r.Present(32,32)); pixel(16,16,{0,255,0,255});
             r.PollGpu();
         }
+        // Two stages may share an image while using different samplers. Texture
+        // object parameters would make the last stage silently override both.
+        auto sampler_pair=std::make_shared<ShaderPair>(); sampler_pair->vertex=pair->vertex;
+        sampler_pair->fragment=R"(#version 400
+uniform sampler2D SPIRV_Cross_Combinedtex0smp0, SPIRV_Cross_Combinedtex1smp1;
+out vec4 color;
+void main() { color=vec4(texture(SPIRV_Cross_Combinedtex0smp0,vec2(1.25,.5)).r,texture(SPIRV_Cross_Combinedtex1smp1,vec2(1.25,.5)).g,0,1); }
+)";
+        auto shared_pixels=std::make_shared<TexturePixels>(); shared_pixels->levels={{0xffff0000,0xff00ff00}};
+        auto sampler_draw=cache_draw; sampler_draw.shaders=sampler_pair; sampler_draw.textures={};
+        for(unsigned i=0;i<2;i++) { auto& t=sampler_draw.textures[i];t.width=2;t.height=1;t.pixels=shared_pixels;t.wrap_u=i?3:1; }
+        assert(r.Execute(Frame({sampler_draw}))); assert(r.Present(32,32)); pixel(16,16,{255,255,0,255});
+        sampler_pair=std::make_shared<ShaderPair>(); sampler_pair->vertex=pair->vertex;
+        sampler_pair->fragment=R"(#version 400
+uniform sampler2D SPIRV_Cross_Combinedtex0smp0;out vec4 color;
+void main() { color=texture(SPIRV_Cross_Combinedtex0smp0,vec2(2,.5)); }
+)";
+        sampler_draw.shaders=sampler_pair; sampler_draw.textures[0].wrap_u=4; sampler_draw.textures[0].border_color=0xff0000ff;
+        assert(r.Execute(Frame({sampler_draw}))); assert(r.Present(32,32)); pixel(16,16,{0,0,255,255});
+        auto lod_pixels=std::make_shared<TexturePixels>();
+        lod_pixels->levels={std::vector<uint32_t>(16,0xffff0000),std::vector<uint32_t>(4,0xff00ff00),{0xff0000ff}};
+        auto& lod=sampler_draw.textures[0];lod.width=lod.height=4;lod.pixels=lod_pixels;lod.wrap_u=3;lod.mip_filter=1;lod.max_mip=2;
+        assert(r.Execute(Frame({sampler_draw}))); assert(r.Present(32,32)); pixel(16,16,{0,0,255,255});
         auto face_pair=std::make_shared<ShaderPair>(); face_pair->vertex=pair->vertex;
         face_pair->fragment="#version 330\nout vec4 color; void main() { color=gl_FrontFacing?vec4(0,1,0,1):vec4(1,0,0,1); }";
         cache_draw.shaders=face_pair; cache_draw.pipeline.front=GL_CW;
@@ -190,6 +228,53 @@ void main() { color=(texture(SPIRV_Cross_Combinedtex0smp0,vec2(.5))+texture(SPIR
         cache_draw.pipeline.front=GL_CCW;
         assert(r.Execute(Frame({cache_draw}))); assert(r.Present(32,32)); pixel(16,16,{255,0,0,255});
 #endif
+        // The screen target has actual output pixels; readbacks retain guest
+        // dimensions. Resizing preserves color AND depth rather than leaving
+        // an undefined frame or allowing far geometry through retained depth.
+        r.SetAspect(0);
+        r.SetOutputSize(64,64,32,32);
+        auto near=Quad({1,0,0,1},.25f); near.pipeline.depth=true;near.pipeline.depth_write=true;near.pipeline.depth_func=GL_LESS;
+        assert(r.Execute(Frame({Clear(),near}))); assert(r.Present(32,32));pixel(16,16,{255,0,0,255});
+        assert(r.Capture("resolution-test.ppm"));
+        {
+            std::ifstream capture("resolution-test.ppm",std::ios::binary);std::string magic;unsigned w=0,h=0;
+            capture>>magic>>w>>h;assert(magic=="P6" && w==64 && h==64);
+        }
+        r.SetOutputSize(96,64,32,32);
+        auto far=Quad({0,0,1,1},.8f);far.pipeline=near.pipeline;
+        assert(r.Execute(Frame({far})));assert(r.Present(32,32));pixel(16,16,{255,0,0,255});
+        auto corner=Quad({0,1,0,1},.1f);corner.pipeline=near.pipeline;corner.pipeline.scissors={{0,0,8,8}};
+        assert(r.Execute(Frame({corner})));assert(r.Present(32,32));pixel(2,2,{0,255,0,255});pixel(16,16,{255,0,0,255});
+        Command scaled_read;scaled_read.kind=Command::Kind::Readback;scaled_read.target={1,2,32,32};
+        scaled_read.readback=std::make_shared<std::promise<std::vector<uint32_t>>>();auto scaled_future=scaled_read.readback->get_future();
+        assert(r.Execute(Frame({scaled_read})));const auto scaled_pixels=scaled_future.get();
+        assert(scaled_pixels.size()==32*32 && scaled_pixels[16*32+16]==0xffff0000 && scaled_pixels[29*32+2]==0xff00ff00);
+        Submission scaled_comparison;scaled_comparison.frame=999;scaled_comparison.reference_width=scaled_comparison.reference_height=32;
+        scaled_comparison.reference_pixels.resize(32*32,0xffff0000);
+        for(unsigned y=0;y<8;y++) for(unsigned x=0;x<8;x++) scaled_comparison.reference_pixels[y*32+x]=0xff00ff00;
+        r.Compare(scaled_comparison);
+        {
+            std::ifstream report("compare.txt");std::string line;std::getline(report,line);assert(line.find("mean_RGB_error=0 ")!=std::string::npos);
+            std::ifstream capture("compare-gpu.ppm",std::ios::binary);std::string magic;unsigned w=0,h=0;
+            capture>>magic>>w>>h;assert(w==32 && h==32);
+        }
+        std::remove("compare.txt");std::remove("compare-gpu.ppm");std::remove("compare-reference.ppm");
+        auto scaled_depth=scaled_read;scaled_depth.read_depth=true;
+        scaled_depth.readback=std::make_shared<std::promise<std::vector<uint32_t>>>();auto scaled_z=scaled_depth.readback->get_future();
+        assert(r.Execute(Frame({scaled_depth})));assert(std::abs(int(scaled_z.get()[16*32+16]>>8)-4194304)<=1);
+        // The guest scissor follows the same HUD squeeze and pivot as the shader.
+        auto squeeze=Quad({0,0,1,1});squeeze.pipeline.clip_scale=.5f;squeeze.pipeline.clip_pivot=16;
+        squeeze.pipeline.scissors={{0,0,8,32}};
+        assert(r.Execute(Frame({Clear(),squeeze})));assert(r.Present(32,32));
+        pixel(2,16,{0,0,0,255});pixel(9,16,{0,0,255,255});pixel(14,16,{0,0,0,255});
+        // Half-sized sampled surfaces/cube faces remain native, not screen-scaled.
+        auto small=Clear(0xff00ff00);small.target={19,0,16,16};
+        assert(r.Execute(Frame({small},19)));assert(r.Capture("resolution-test.ppm"));
+        {
+            std::ifstream capture("resolution-test.ppm",std::ios::binary);std::string magic;unsigned w=0,h=0;
+            capture>>magic>>w>>h;assert(w==16 && h==16);
+        }
+        std::remove("resolution-test.ppm");
         assert(r.Present(0,0));
     }
     eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);

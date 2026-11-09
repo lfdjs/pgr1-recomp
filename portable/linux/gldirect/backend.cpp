@@ -65,8 +65,16 @@ class GLBackend final : public Backend {
     std::uint64_t frames_=0, draws_=0, unsupported_=0;
     std::uint64_t compare_frame_=0;
     std::map<std::pair<uint64_t,uint64_t>,std::shared_ptr<const ShaderPair>> shaders_;
-    struct CachedPixels { uint64_t hash=0; TextureDesc desc{}; std::shared_ptr<const TexturePixels> pixels; };
+    struct CachedPixels {
+        TextureDesc desc{};
+        std::shared_ptr<const TexturePixels> pixels;
+        // Exact byte snapshots let libc's vectorized comparison check every bind,
+        // including direct CPU writes made without Lock/MarkDirty in this frame.
+        std::vector<uint8_t> guest;
+        uint64_t used=0;
+    };
     std::map<uint32_t,CachedPixels> textures_;
+    uint64_t texture_clock_=0;
 
     void Unsupported(const char* reason) {
         ++unsupported_;
@@ -148,7 +156,14 @@ public:
         p.depth=s.rs[kRsZEnable] && c.target.depth; p.depth_write=m(kMZWriteEnable); p.depth_func=m(kMZFunc);
         p.blend=m(kMBlendEnable); p.src_blend=m(kMSrcBlend); p.dst_blend=m(kMDestBlend); p.blend_op=m(kMBlendOp); p.blend_color=m(kMBlendColor);
         p.fill=s.rs[kRsFillMode] ? s.rs[kRsFillMode] : 0x1b02;
-        if(m(kMSolidOffsetEnable) && s.rs[kRsZEnable]!=2) { p.depth_bias=std::bit_cast<float>(m(kMDepthOffset)); p.depth_slope=std::bit_cast<float>(m(kMSlopeScale)); }
+        // GL polygon offset units use the host depth format's integer range.
+        // Xbox offsets are expressed in zscale units; points/lines do not take
+        // the solid-triangle offset (the same restriction as the SDK backend).
+        if(prim>=5 && m(kMSolidOffsetEnable) && s.rs[kRsZEnable]!=2) {
+            const float max_depth=(c.target.depth_format==0x2c || c.target.depth_format==0x30)?65535.0f:16777215.0f;
+            p.depth_bias=std::round(std::bit_cast<float>(m(kMDepthOffset))*max_depth/s.zscale);
+            p.depth_slope=std::bit_cast<float>(m(kMSlopeScale));
+        }
         p.color_mask=m(kMColorWriteEnable); p.cull=s.rs[kRsCullMode]; p.front=s.rs[kRsFrontFace];
         p.stencil=s.rs[kRsStencilEnable] && c.target.depth; p.stencil_func=m(kMStencilFunc); p.stencil_ref=m(kMStencilRef);
         p.stencil_mask=m(kMStencilMask); p.stencil_write=m(kMStencilWriteMask);
@@ -175,6 +190,9 @@ public:
             t.width=d.width; t.height=d.height; t.cube=d.cube;
             t.wrap_u=ts[kTssAddressU]; t.wrap_v=ts[kTssAddressV];
             t.min_filter=ts[kTssMinFilter]; t.mag_filter=ts[kTssMagFilter]; t.mip_filter=ts[kTssMipFilter];
+            t.wrap_w=ts[kTssAddressW]; t.border_color=ts[kTssBorderColor];
+            t.lod_bias=std::bit_cast<float>(ts[kTssMipLodBias]); t.max_mip=ts[kTssMaxMipLevel];
+            t.max_anisotropy=std::max(1u,ts[kTssMaxAnisotropy]);
             tex_info[stage].kind=d.cube ? kTexCube : kTex2D; tex_info[stage].rect=d.linear;
             constants.texsize[stage][0]=float(d.width); constants.texsize[stage][1]=float(d.height);
             if(gpu_written_.contains(d.data) && gpu_epoch_[d.data]!=DirtyEpoch(d.data)) gpu_written_.erase(d.data);
@@ -185,13 +203,25 @@ public:
             if(!d.cube && gpu_written_.contains(d.data)) {
                 if(d.data==c.target.color) { Unsupported("render-target feedback loop"); return; }
                 t.render_target=d.data; tex_info[stage].flags|=1;
+                if(NoAlphaFormat(d.format)) tex_info[stage].flags|=kTexOpaque;
                 continue;
             }
-            if(textures_.size()>=512 && !textures_.contains(d.data)) textures_.clear();
+            if(textures_.size()>=512 && !textures_.contains(d.data)) {
+                // Evict one least recently bound snapshot, not the whole scene.
+                // Commands retain shared ownership until the GPU consumes them.
+                auto oldest=std::min_element(textures_.begin(),textures_.end(),[](const auto& a,const auto& b) { return a.second.used<b.second.used; });
+                textures_.erase(oldest);
+            }
             auto& cached=textures_[d.data];
-            const uint64_t hash=Hash(kernel::HostPtr(d.data),TotalSize(d));
-            if(!cached.pixels || cached.hash!=hash || cached.desc.format!=d.format || cached.desc.width!=d.width ||
-               cached.desc.height!=d.height || cached.desc.levels!=d.levels || cached.desc.cube!=d.cube || cached.desc.pitch!=d.pitch) {
+            cached.used=++texture_clock_;
+            const auto check_start=std::chrono::steady_clock::now();
+            const auto bytes=TotalSize(d);
+            const auto* guest=static_cast<const uint8_t*>(kernel::HostPtr(d.data));
+            const bool changed=!cached.pixels || cached.desc.format!=d.format || cached.desc.width!=d.width ||
+               cached.desc.height!=d.height || cached.desc.levels!=d.levels || cached.desc.cube!=d.cube || cached.desc.pitch!=d.pitch ||
+               cached.guest.size()!=bytes || std::memcmp(guest,cached.guest.data(),bytes)!=0;
+            frame_.texture_check_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-check_start).count();
+            if(changed) {
                 const auto decode_start=std::chrono::steady_clock::now();
                 auto pixels=std::make_shared<TexturePixels>();
                 for(unsigned face=0;face<(d.cube?6u:1u);face++) for(unsigned level=0;level<d.levels;level++) {
@@ -201,13 +231,15 @@ public:
                     }
                     pixels->levels.push_back(std::move(decoded));
                 }
-                cached={hash,d,pixels};
+                cached.desc=d; cached.pixels=pixels; cached.guest.assign(guest,guest+bytes);
                 frame_.decode_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-decode_start).count();
             }
             t.pixels=cached.pixels;
         }
         Assembled a;
+        const auto assembly_start=std::chrono::steady_clock::now();
         if(!Assemble(s,prim,start,count,indices,a)) return;
+        frame_.assemble_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-assembly_start).count();
         if(a.vertices.empty() || !(a.regs&1)) { Unsupported("raw or missing position attributes"); return; }
         if(a.pretransformed && (c.target.height==480 || c.target.height==576) && c.target.width>=c.target.height &&
            app::FrameAspect()>app::kGame.hud_aspect+1e-3f) {
@@ -223,8 +255,9 @@ public:
                 if(s.squeeze_beyond && k<1) constants.hud[1]+=s.squeeze_shift*k/(1-k);
             }
         }
+        if(constants.hud[0]<0) { p.clip_scale=-constants.hud[0]; p.clip_pivot=constants.hud[1]; }
         auto pk=MakePixelKey(s,tex_info); pk.wbuf=s.rs[kRsZEnable]==2;
-        const auto fk=MakeFixedKey(s);
+        FixedKey fk{}; if(!program) fk=MakeFixedKey(s);
         uint64_t vh=program ? Hash(s.vs->program.data(),s.vs->program.size()*4) : Hash(&fk,sizeof(fk));
         vh=Hash(&a.regs,sizeof(a.regs),vh); vh=Hash(&a.pretransformed,sizeof(a.pretransformed),vh);
         const uint64_t ph=Hash(&pk,sizeof(pk));
@@ -256,6 +289,7 @@ public:
         // The SDK loads declaration constants on SetVertexShader. State::vsc also
         // includes later title writes; reapplying the declaration here would erase them.
         c.draw_constants.resize(sizeof(constants)); std::memcpy(c.draw_constants.data(),&constants,sizeof(constants));
+        c.depth_slope_offset=offsetof(DrawConstants,wdepth)+sizeof(float);
         const unsigned stride=std::popcount(a.regs)*4;
         c.vertices.resize(a.vertex_count);
         for(unsigned i=0;i<a.vertex_count;i++) {

@@ -57,8 +57,10 @@ file(GLOB generated_sources CONFIGURE_DEPENDS "${PGR1_GENERATED_DIR}/x86_recomp.
 add_library(pgr1_generated OBJECT ${generated_sources})
 target_include_directories(pgr1_generated PRIVATE "${PGR1_SDK_SOURCE_DIR}/runtime" "${PGR1_GENERATED_DIR}")
 target_compile_options(pgr1_generated PRIVATE -O1 -g0 -w -fno-strict-aliasing -march=x86-64-v2)
-add_executable(game main.cpp backend.cpp commands.cpp renderer.cpp shader_compiler.cpp draw_constants.cpp sdl_audio.cpp
-    ${runtime_sources} ${harness_sources} ${game_sources} $<TARGET_OBJECTS:pgr1_generated>)
+set(native_harness_sources ${harness_sources})
+list(FILTER native_harness_sources EXCLUDE REGEX "/app_headless.cpp$")
+add_executable(game app_linux.cpp main.cpp backend.cpp commands.cpp renderer.cpp shader_compiler.cpp draw_constants.cpp sdl_audio.cpp
+    ${runtime_sources} ${native_harness_sources} ${game_sources} $<TARGET_OBJECTS:pgr1_generated>)
 target_include_directories(game PRIVATE "${PGR1_ROOT}/src" "${PGR1_SDK_SOURCE_DIR}/runtime"
     "${PGR1_SDK_SOURCE_DIR}/harness" "${PGR1_SDK_SOURCE_DIR}/harness/compat" "${PGR1_GENERATED_DIR}")
 target_compile_definitions(game PRIVATE PGR1_RELEASE=${PGR1_RELEASE} XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=0 PGR1_ENABLE_REFERENCE_COMPARE=1)

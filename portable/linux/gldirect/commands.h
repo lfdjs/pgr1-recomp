@@ -18,6 +18,7 @@ struct Target { std::uint32_t color=0, depth=0, width=640, height=480; bool opaq
 struct Rect { int x=0, y=0, w=640, h=480; };
 struct Pipeline {
     Rect viewport;
+    float clip_scale=1, clip_pivot=0;
     float min_z=0, max_z=1, depth_bias=0, depth_slope=0;
     std::uint32_t fill=0x1b02;
     bool depth=false, depth_write=false, blend=false, stencil=false, alpha_test=false;
@@ -32,6 +33,8 @@ struct Texture {
     std::uint32_t width=0, height=0;
     std::vector<std::uint32_t> bgra;
     std::uint32_t wrap_u=3, wrap_v=3, min_filter=1, mag_filter=1, mip_filter=0;
+    std::uint32_t wrap_w=3, border_color=0, max_mip=0, max_anisotropy=1;
+    float lod_bias=0;
     bool cube=false;
     std::uint32_t render_target=0;
     std::array<std::uint32_t,6> face_targets{};
@@ -56,10 +59,14 @@ struct Command {
     std::shared_ptr<const ShaderPair> shaders;
     std::array<std::array<float,4>,192> vertex_constants{};
     std::vector<std::uint8_t> draw_constants;
+    // Optional float offset in the opaque uniform payload. Pixel W-depth slope
+    // is in guest pixels and must follow the physical render-target scale.
+    std::uint32_t depth_slope_offset=~0u;
 };
 struct Submission {
     std::uint64_t frame=0, draws=0, unsupported=0;
     std::uint64_t supported=0, rejected_draws=0, draw_ns=0, max_draw_ns=0, decode_ns=0, queue_wait_ns=0;
+    std::uint64_t texture_check_ns=0, assemble_ns=0;
     std::uint32_t front=0;
     bool present=true;
     std::uint32_t reference_width=0, reference_height=0;

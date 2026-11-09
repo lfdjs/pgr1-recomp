@@ -1,0 +1,19 @@
+# Native Linux acceptance route; vblank buttons [vblanks held].
+# REQUIRES an existing Player profile on the isolated emulated HDD and
+# PGR1_SKIP_INTRO=1. Selects saved Player, arcade/easy/San Francisco/MINI/Auto.
+# This route was visually checked in the baseline build (vehicle reached35mph).
+# It is not a first-boot/new-driver script; inspect a capture before calling the
+# resulting session a race benchmark. Existing menu selection can change the route.
+# Short holds avoid auto-repeat in menus.
+180 START 1
+360 A 1
+540 A 1
+720 A 1
+900 A 1
+1080 A 1
+1260 A 1
+1440 A 1
+1620 A 1
+# Allow track load, skip flyby, then accelerate.
+2400 A 1
+2520 RT 9000

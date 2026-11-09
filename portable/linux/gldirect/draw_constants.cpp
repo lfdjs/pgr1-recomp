@@ -187,12 +187,20 @@ gpu::DrawConstants Constants(const gpu::State& s,unsigned width,unsigned height,
     FillSurfaceConstants(s,{width,height},c);
     FillFogConstants(s,program,c);
     FillCombinerConstants(s,c);
-    FillTransformConstants(s,{width,height},c);
-    FillLightConstants(s,gpu::MakeFixedKey(s),c);
+    // VertexProgramHlsl consumes the title's VC registers, not the fixed function
+    // matrices/material/lights. PixelHlsl does not consume these fields either.
+    // Keep the common DC layout, but avoid evaluating four inverse-transpose
+    // matrices and all lighting state for every programmable world draw.
+    if(!program) {
+        FillTransformConstants(s,{width,height},c);
+        FillLightConstants(s,gpu::MakeFixedKey(s),c);
+    }
     c.hud[0]=1; c.hud[1]=float(width)*.5f; c.hud[2]=s.rs[gpu::kRsZEnable] && s.simple[gpu::kMZFunc/4]!=0x207;
     c.hud[3]=s.rs[gpu::kRsZEnable]==2;
     if(s.simple[gpu::kMSolidOffsetEnable/4]) { c.wdepth[0]=Bits(s.simple[gpu::kMDepthOffset/4]); c.wdepth[1]=Bits(s.simple[gpu::kMSlopeScale/4]); }
-    c.wdepth[2]=1.0f/s.zscale;
+    // The Xbox stores an integer W depth in 2^16/2^24 representable steps.
+    // Match the SDK's GPU path: zscale is the largest integer, not the count.
+    c.wdepth[2]=1.0f/(s.zscale+1.0f);
     c.wdepth[3]=program ? 1.0f : s.zscale*s.inv_wfar;
     for(unsigned i=0;i<4;i++) {
         const auto& t=s.tss[i];

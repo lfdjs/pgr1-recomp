@@ -33,6 +33,7 @@ settings.toml
 # Portable generated shader/diagnostic caches
 __pycache__/
 /shadercache-gl-v1/
+/shadercache-gl-v2/
 /frames.csv
 /gpu.csv
 /compare.txt
