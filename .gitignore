@@ -34,7 +34,9 @@ settings.toml
 __pycache__/
 /shadercache-gl-v1/
 /shadercache-gl-v2/
+/shadercache-vk-v1/
 /frames.csv
+/submissions.csv
 /gpu.csv
 /compare.txt
 /compare-*.ppm

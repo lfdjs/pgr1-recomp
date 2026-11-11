@@ -12,7 +12,12 @@ struct Vertex {
     std::array<float,4> position, color, uv;
     std::array<std::array<float,4>,16> attributes{};
 };
-struct ShaderPair { std::string vertex, fragment; };
+struct ShaderPair {
+    std::string vertex, fragment; // OpenGL GLSL; unchanged for existing consumers.
+    // Native Vulkan owns the asynchronous SDK-HLSL translation. A future keeps
+    // both SPIR-V binaries alive without retaining SDK state or guest pointers.
+    std::shared_future<std::array<std::string,2>> spirv;
+};
 struct TexturePixels { std::vector<std::vector<std::uint32_t>> levels; };
 struct Target { std::uint32_t color=0, depth=0, width=640, height=480; bool opaque=false; std::uint32_t format=0x12, depth_format=0x2e; };
 struct Rect { int x=0, y=0, w=640, h=480; };
@@ -47,6 +52,9 @@ struct Command {
     bool read_depth=false;
     std::vector<Rect> destination_rects;
     std::shared_ptr<std::promise<std::vector<std::uint32_t>>> readback;
+    // Exact passing-sample count from this draw's Vulkan occlusion query. Its
+    // consumer resolves after GPU completion, or propagates rejected work.
+    std::shared_ptr<std::promise<std::uint64_t>> visibility;
     Pipeline pipeline;
     std::uint32_t flags=0, color=0, stencil=0;
     float z=1;
@@ -72,6 +80,9 @@ struct Submission {
     std::uint32_t reference_width=0, reference_height=0;
     std::vector<std::uint32_t> reference_pixels;
     std::vector<Command> commands;
+    // Native consumer resolves this only after its GPU fence, including an
+    // empty ordered marker. Destruction on cancellation breaks the promise.
+    std::shared_ptr<std::promise<void>> completion;
 };
 // Bounded FIFO: preserve incremental frames, clear/draw ordering and guest buffer lifetimes.
 // Stop releases a producer blocked by a closing window.

@@ -44,6 +44,13 @@ int main() {
     backend->Draw(s,8,0,4,nullptr); backend->Present(s.rt);
     Submission f; assert(Take(f)); assert(f.commands.size()==2 && f.unsupported==0);
     const auto& c=f.commands[1]; assert(c.vertices.size()==4 && c.indices.size()==6 && c.topology==4);
+#ifdef PGR1_NATIVE_VULKAN
+    assert(c.shaders->spirv.valid());
+    for(const auto& binary:c.shaders->spirv.get()) {
+        uint32_t magic=0; assert(binary.size()>=20 && binary.size()%4==0);
+        std::memcpy(&magic,binary.data(),sizeof(magic)); assert(magic==0x07230203);
+    }
+#endif
     assert(c.indices==std::vector<uint32_t>({0,1,2,0,2,3}));
     assert(c.vertices[0].color[0]==1 && c.vertices[0].color[2]==0);
     assert(f.commands[0].rects[0].w==32 && f.front==0x10000);
@@ -55,6 +62,17 @@ int main() {
     f.commands.back().readback->set_value(std::vector<uint32_t>(1024,0xffabcdef)); sync.join();
     assert(kernel::R32(s.rt.data)==0xffabcdef);
     backend->Sync(s.rt.data,0); assert(!Take(f)); // no new GPU writes: no redundant stall
+#ifdef PGR1_NATIVE_VULKAN
+    // Vulkan readback rows use guest top-down orientation (GL uses bottom-up).
+    backend->Clear(s,0,nullptr,0xf0,0xff102030,1,0);
+    std::thread rows([&] { backend->Sync(s.rt.data,0); });
+    while(!Take(f)) std::this_thread::yield();
+    auto pixels=std::vector<uint32_t>(1024,0xffabcdef);
+    pixels[0]=0xff123456; pixels[31*32]=0xff654321;
+    f.commands.back().readback->set_value(std::move(pixels)); rows.join();
+    assert(kernel::R32(s.rt.data)==0xff123456);
+    assert(kernel::R32(s.rt.data+31*128)==0xff654321);
+#endif
     backend->SyncLate(s.rt.data); backend->Flush(); assert(Take(f));
     f.commands.back().readback->set_value(std::vector<uint32_t>(1024,0xff123456));
     backend->SyncLate(s.rt.data); assert(kernel::R32(s.rt.data)==0xff123456);
@@ -110,6 +128,16 @@ int main() {
     backend->Draw(s,8,0,4,nullptr); backend->Present(s.rt); assert(Take(f));
     assert(f.commands.size()==1 && f.commands[0].textures[0].cube);
     assert(f.commands[0].textures[0].render_target==0 && f.commands[0].textures[0].face_targets[0]==s.rt.data);
+#ifdef PGR1_NATIVE_VULKAN
+    // Flat interpolation attributes must precede HLSL qualifiers; the Vulkan
+    // interface annotations must also preserve SDK cubemap shader declarations.
+    s.simple[gpu::kMShadeMode/4]=0x1d00;
+    backend->Draw(s,8,0,4,nullptr); backend->Present(s.rt); assert(Take(f));
+    assert(f.commands.size()==1);
+    assert(f.commands[0].indices==std::vector<uint32_t>({2,0,1,3,0,2}));
+    for(const auto& binary:f.commands[0].shaders->spirv.get()) assert(binary.size()>=20 && binary.size()%4==0);
+    s.simple[gpu::kMShadeMode/4]=0;
+#endif
     // Unsupported programmable work is explicitly counted and never replaced with a fake draw.
     s.vs_handle=1; backend->Draw(s,5,0,3,nullptr); backend->Present(s.rt); assert(Take(f));
     assert(f.commands.empty() && f.unsupported==1);
@@ -121,6 +149,65 @@ int main() {
     s.vs=std::make_shared<gpu::VertexShader>(); s.vs->program={0,14u<<21,0,1};
     backend->Draw(s,5,0,3,nullptr); backend->Present(s.rt); assert(Take(f));
     assert(f.commands.empty() && f.unsupported==2); // unknown opcode is recorded, never rendered as zero
+#ifdef PGR1_NATIVE_VULKAN
+    // Fence/busy reflect actual consumer GPU completion, including a prefix
+    // without Present; producer snapshots alone are not device completion.
+    s.vs_handle=0x44; s.vs.reset();
+    backend->Draw(s,5,0,3,nullptr);
+    const auto fence=backend->Fence();
+    assert(fence && backend->FencePending(fence));
+    assert(backend->Busy(s.streams[0].vb));
+    assert(!backend->Busy(0xdeadbeef));
+    assert(Take(f) && !f.present && f.commands.size()==1 && f.completion);
+    f.completion->set_value();
+    assert(!backend->FencePending(fence));
+    assert(!backend->Busy(s.streams[0].vb));
+    backend->WaitFence(fence);
+    // An empty completion marker is ordered behind all previously queued work.
+    const auto marker=backend->Fence();
+    assert(Take(f) && f.commands.empty() && f.completion);
+    assert(backend->FencePending(marker));
+    f.completion->set_value(); backend->WaitFence(marker);
+    assert(!backend->FencePending(marker));
+    backend->Draw(s,5,0,3,nullptr);
+    std::thread resource_wait([&] { backend->WaitResource(s.streams[0].vb); });
+    while(!Take(f)) std::this_thread::yield();
+    assert(!f.present && f.completion);
+    f.completion->set_value(); resource_wait.join();
+    assert(!backend->Busy(s.streams[0].vb));
+
+    // Visibility reports sum exact device results from accepted counted draws,
+    // preserving time/count/status publication and waiting for GPU completion.
+    constexpr uint32_t report=0x8000;
+    s.simple[gpu::kMCountEnable/4]=1;
+    backend->ClearReport();
+    backend->Draw(s,5,0,3,nullptr); backend->Draw(s,5,0,3,nullptr);
+    kernel::W32(report+12,0xffffffff);
+    std::thread report_wait([&] { backend->GetReport(report); });
+    while(!Take(f)) std::this_thread::yield();
+    assert(!f.present && f.commands.size()==2 && f.completion);
+    assert(kernel::R32(report+12)==0xffffffff);
+    assert(f.commands[0].visibility && f.commands[1].visibility);
+    f.commands[0].visibility->set_value(21); f.commands[1].visibility->set_value(34);
+    f.completion->set_value(); report_wait.join();
+    assert(kernel::R32(report+4)==0 && kernel::R32(report+8)==55 && kernel::R32(report+12)==0);
+    // Reset excludes old results, and a wide GPU count saturates the Xbox word.
+    backend->ClearReport(); backend->Draw(s,5,0,3,nullptr);
+    std::thread saturated([&] { backend->GetReport(report); });
+    while(!Take(f)) std::this_thread::yield();
+    assert(f.commands.size()==1 && f.commands[0].visibility);
+    f.commands[0].visibility->set_value(UINT64_MAX);
+    f.completion->set_value(); saturated.join();
+    assert(kernel::R32(report+8)==UINT32_MAX);
+    // An empty interval still publishes a genuine zero after an ordered marker.
+    backend->ClearReport();
+    std::thread empty_report([&] { backend->GetReport(report); });
+    while(!Take(f)) std::this_thread::yield();
+    assert(f.commands.empty() && f.completion);
+    f.completion->set_value(); empty_report.join();
+    assert(kernel::R32(report+8)==0 && kernel::R32(report+12)==0);
+    s.simple[gpu::kMCountEnable/4]=0;
+#endif
     std::puts("SDK capture tests passed: FVF colors, quad topology, 16-bit indices, owned guest data, texture decode, unsupported shaders.");
     Stop();
 }

@@ -4,6 +4,11 @@ Current: native Linux GPU runtime with translated SDK shaders, SDL3 audio and
 OpenGL/Zink race validation. See [native runtime](04-native-linux.md) and
 [validation report](validation-2026-11-08.md). Performance and visual parity remain open.
 
+The separate [04C native Vulkan runtime](07-vulkan-native-game.md) connects the
+recompiled game to owned command submissions and SDK-generated SPIR-V. Its
+validation limits are documented independently from the 04B geometry fixture
+and the OpenGL/Zink race validation.
+
 The milestone 00 scaffold description below is historical.
 
 ## Current baseline
@@ -62,5 +67,7 @@ bash scripts/portable-linux.sh build
 bash scripts/portable-linux.sh run
 ```
 
-CPU/SHM preview remains an explicit diagnostic path. Native Vulkan is not implemented;
-`run-vulkan` selects Mesa Zink and checks the actual renderer.
+CPU/SHM preview remains an explicit diagnostic path. `run-vulkan` selects Mesa
+Zink and checks the actual renderer. The separate native Vulkan executable uses
+`bash scripts/portable-vulkan.sh build-game` and `run-game`; see
+[04C commands, architecture and acceptance limits](07-vulkan-native-game.md).

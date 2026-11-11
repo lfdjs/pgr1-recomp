@@ -16,9 +16,16 @@ int main() {
         assert(f.frame==i && f.commands[0].vertices[0].position[0]==float(i));
     }
     producer.join();
-    Submit({}); Submit({});
+    Submission cancelled;
+    cancelled.completion=std::make_shared<std::promise<void>>();
+    auto completion=cancelled.completion->get_future();
+    Submit(std::move(cancelled)); Submit({});
     std::atomic<bool> entered=false;
     std::thread blocked([&] { entered=true; Submit({}); });
     while(!entered) std::this_thread::yield();
     Stop(); blocked.join(); assert(!Take(f)); Submit({}); assert(!Take(f));
+    assert(completion.wait_for(std::chrono::seconds(0))==std::future_status::ready);
+    bool cancelled_promise=false;
+    try { completion.get(); } catch(const std::future_error&) { cancelled_promise=true; }
+    assert(cancelled_promise); // A closing renderer cannot strand guest fences.
 }

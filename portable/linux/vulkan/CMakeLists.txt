@@ -48,4 +48,75 @@ if(BUILD_TESTING)
   add_executable(pgr1_vk_command_bridge_test vk_guest_frame.cpp vk_command_bridge.cpp test_vk_command_bridge.cpp)
   target_compile_options(pgr1_vk_command_bridge_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
   add_test(NAME vk_owned_submission_bridge COMMAND pgr1_vk_command_bridge_test)
+  set(PGR1_SDK_SOURCE_DIR "${PGR1_ROOT}/sdk" CACHE PATH "Compatible, pinned XboxXBERecomp SDK checkout")
+  if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/shaders.cpp")
+    find_package(Threads REQUIRED)
+    add_executable(pgr1_vk_renderer_test test_game_renderer.cpp game_renderer.cpp
+      ../gldirect/commands.cpp ../gldirect/shader_compiler.cpp ../gldirect/draw_constants.cpp
+      "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/shaders.cpp")
+    target_include_directories(pgr1_vk_renderer_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect"
+      "${PGR1_SDK_SOURCE_DIR}/runtime")
+    target_compile_definitions(pgr1_vk_renderer_test PRIVATE
+      "PGR1_GLSLANG_EXECUTABLE=\"${PGR1_VK_GLSLANG}\"")
+    target_compile_options(pgr1_vk_renderer_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+    target_link_options(pgr1_vk_renderer_test PRIVATE -Wl,--gc-sections)
+    target_link_libraries(pgr1_vk_renderer_test PRIVATE Threads::Threads SDL3::SDL3 Vulkan::Vulkan)
+    add_test(NAME vk_sdk_offscreen_pixels COMMAND pgr1_vk_renderer_test)
+    set_tests_properties(vk_sdk_offscreen_pixels PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+
+    add_executable(pgr1_vk_backend_test backend.cpp ../gldirect/commands.cpp ../gldirect/shader_compiler.cpp
+      ../gldirect/draw_constants.cpp ../gldirect/tests/backend_test.cpp
+      "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/shaders.cpp"
+      "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/vertex.cpp"
+      "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/texture.cpp")
+    target_include_directories(pgr1_vk_backend_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect"
+      "${PGR1_SDK_SOURCE_DIR}/runtime" "${PGR1_SDK_SOURCE_DIR}/harness" "${PGR1_SDK_SOURCE_DIR}/harness/compat")
+    target_compile_definitions(pgr1_vk_backend_test PRIVATE XBE_RAW_VERTICES=0 PGR1_NATIVE_VULKAN=1
+      "PGR1_GLSLANG_EXECUTABLE=\"${PGR1_VK_GLSLANG}\"")
+    target_compile_options(pgr1_vk_backend_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+    target_link_options(pgr1_vk_backend_test PRIVATE -Wl,--gc-sections)
+    target_link_libraries(pgr1_vk_backend_test PRIVATE Threads::Threads)
+    add_test(NAME vk_sdk_backend_capture COMMAND pgr1_vk_backend_test)
+    set_tests_properties(vk_sdk_backend_capture PROPERTIES TIMEOUT 90)
+  endif()
+endif()
+
+# The fixture stays independent of the proprietary game input and SDK. Enable
+# this target explicitly through portable-vulkan.sh build-game.
+option(PGR1_VK_BUILD_GAME "Build the recompiled PGR1 native Vulkan executable" OFF)
+if(PGR1_VK_BUILD_GAME)
+  set(PGR1_SDK_SOURCE_DIR "${PGR1_ROOT}/sdk" CACHE PATH "Compatible, pinned XboxXBERecomp SDK checkout")
+  set(PGR1_GENERATED_DIR "${PGR1_ROOT}/generated/game" CACHE PATH "Recompiled game sources")
+  set(PGR1_RELEASE "2" CACHE STRING "Disc release selected by XBE SHA-1 (0, 1, 2)")
+  if(NOT PGR1_RELEASE MATCHES "^[012]$")
+    message(FATAL_ERROR "PGR1_RELEASE must be 0, 1 or 2")
+  endif()
+  if(NOT EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/vertex.cpp")
+    message(FATAL_ERROR "Pinned SDK checkout missing: restore sdk before build-game; no SDK revision is changed by this build")
+  endif()
+  if(NOT EXISTS "${PGR1_GENERATED_DIR}/x86_func_mapping.cpp")
+    message(FATAL_ERROR "Missing recompiled game sources: run bash scripts/portable-dev.sh recompile")
+  endif()
+  find_package(Threads REQUIRED)
+  file(GLOB runtime_sources CONFIGURE_DEPENDS "${PGR1_SDK_SOURCE_DIR}/runtime/*/*.cpp")
+  list(FILTER runtime_sources EXCLUDE REGEX "/runtime/app/|/core/input.cpp$|/core/wheel.cpp$|/gpu/d3d12.cpp$|/gpu/d3d11.cpp$|/gpu/d3d_common.cpp$|/audio/xaudio2.cpp$")
+  file(GLOB harness_sources CONFIGURE_DEPENDS "${PGR1_SDK_SOURCE_DIR}/harness/*.cpp")
+  list(FILTER harness_sources EXCLUDE REGEX "/main_test.cpp$|/null_backend.cpp$|/null_audio.cpp$|/app_headless.cpp$")
+  file(GLOB game_sources CONFIGURE_DEPENDS "${PGR1_ROOT}/src/common/*.cpp" "${PGR1_ROOT}/src/game/*.cpp")
+  file(GLOB generated_sources CONFIGURE_DEPENDS "${PGR1_GENERATED_DIR}/x86_recomp.*.cpp" "${PGR1_GENERATED_DIR}/x86_func_mapping.cpp")
+  add_library(pgr1_vk_generated OBJECT ${generated_sources})
+  target_include_directories(pgr1_vk_generated PRIVATE "${PGR1_SDK_SOURCE_DIR}/runtime" "${PGR1_GENERATED_DIR}")
+  target_compile_options(pgr1_vk_generated PRIVATE -O1 -g0 -w -fno-strict-aliasing -march=x86-64-v2)
+  add_executable(pgr1_vk_game main.cpp backend.cpp game_renderer.cpp
+    ../gldirect/app_linux.cpp ../gldirect/commands.cpp ../gldirect/shader_compiler.cpp
+    ../gldirect/draw_constants.cpp ../gldirect/sdl_audio.cpp
+    ${runtime_sources} ${harness_sources} ${game_sources} $<TARGET_OBJECTS:pgr1_vk_generated>)
+  target_include_directories(pgr1_vk_game PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect"
+    "${PGR1_ROOT}/src" "${PGR1_SDK_SOURCE_DIR}/runtime" "${PGR1_SDK_SOURCE_DIR}/harness"
+    "${PGR1_SDK_SOURCE_DIR}/harness/compat" "${PGR1_GENERATED_DIR}")
+  target_compile_definitions(pgr1_vk_game PRIVATE PGR1_RELEASE=${PGR1_RELEASE}
+    XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=0 PGR1_NATIVE_VULKAN=1 PGR1_ENABLE_REFERENCE_COMPARE=1
+    "PGR1_GLSLANG_EXECUTABLE=\"${PGR1_VK_GLSLANG}\"")
+  target_compile_options(pgr1_vk_game PRIVATE -fno-strict-aliasing -march=x86-64-v2)
+  target_link_libraries(pgr1_vk_game PRIVATE Threads::Threads SDL3::SDL3 Vulkan::Vulkan)
 endif()

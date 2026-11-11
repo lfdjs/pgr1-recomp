@@ -1,4 +1,5 @@
-// Xbox state/assembly stays on the guest thread; only owned commands cross to GL.
+// Xbox state/assembly stays on the guest thread; only owned commands cross to
+// the selected host API. The native Vulkan build shares this capture boundary.
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -11,6 +12,7 @@
 #include <fstream>
 #include <sstream>
 #include <span>
+#include <stdexcept>
 #include "gpu/shaders.h"
 #include "app/app.h"
 #include "shader_compiler.h"
@@ -29,17 +31,65 @@
 namespace gpu {
 namespace {
 using namespace pgr::gldirect;
+#ifdef PGR1_NATIVE_VULKAN
+constexpr const char* kBackendName="vulkan-capture";
+constexpr const char* kRejectedShaderCache="shadercache-vk-v1";
+#else
+constexpr const char* kBackendName="gldirect";
+constexpr const char* kRejectedShaderCache="shadercache-gl-v1";
+#endif
 void DumpRejected(const char* kind,std::span<const uint32_t> words) {
     const auto hash=Hash(words.data(),words.size_bytes());
-    std::ostringstream path; path<<"shadercache-gl-v1/rejected-"<<kind<<'-'<<std::hex<<hash<<".nv2a";
-    std::error_code error; std::filesystem::create_directories("shadercache-gl-v1",error);
+    std::ostringstream path; path<<kRejectedShaderCache<<"/rejected-"<<kind<<'-'<<std::hex<<hash<<".nv2a";
+    std::error_code error; std::filesystem::create_directories(kRejectedShaderCache,error);
     std::ofstream file(path.str(),std::ios::binary);
     file.write(reinterpret_cast<const char*>(words.data()),words.size_bytes());
-    LOGR("gldirect: rejected %s shader %llx; diagnostic %s (%s)",kind,(unsigned long long)hash,path.str().c_str(),file?"saved":"write failed");
+    LOGR("%s: rejected %s shader %llx; diagnostic %s (%s)",kBackendName,kind,(unsigned long long)hash,path.str().c_str(),file?"saved":"write failed");
 }
 Rect Rectangle(const uint32_t* r) { return {int(r[0]),int(r[1]),int(r[2])-int(r[0]),int(r[3])-int(r[1])}; }
 class GLBackend final : public Backend {
     Submission frame_;
+#ifdef PGR1_NATIVE_VULKAN
+    std::shared_future<void> current_completion_;
+    std::map<uint32_t,std::shared_future<void>> fences_, resource_use_;
+    std::vector<std::shared_future<uint64_t>> counted_;
+    uint32_t next_fence_=0;
+    std::shared_future<void> Completion() {
+        if(!frame_.completion) {
+            frame_.completion=std::make_shared<std::promise<void>>();
+            current_completion_=frame_.completion->get_future().share();
+        }
+        return current_completion_;
+    }
+    void Use(uint32_t header) { if(header) resource_use_[header]=Completion(); }
+    void UseDraw(const State& s) {
+        Use(s.rt.header); Use(s.zs.header); Use(s.index_buffer);
+        for(auto texture:s.textures) Use(texture);
+        for(const auto& stream:s.streams) Use(stream.vb);
+        if(s.input_active) for(const auto& stream:s.input_streams) Use(stream.vb);
+    }
+    static bool Pending(const std::shared_future<void>& future) {
+        if(!future.valid() || future.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
+            if(future.valid()) try { future.get(); }
+            catch(const std::exception& e) { Fail(std::string("GPU completion cancelled: ")+e.what()); }
+            return false;
+        }
+        return true;
+    }
+    static void WaitCompletion(const std::shared_future<void>& future) {
+        if(future.valid()) try { future.get(); }
+        catch(const std::exception& e) { Fail(std::string("GPU completion cancelled: ")+e.what()); }
+    }
+#endif
+    void SubmitFrame() {
+#ifdef PGR1_NATIVE_VULKAN
+        Completion();
+#endif
+        Submit(std::move(frame_)); frame_={};
+#ifdef PGR1_NATIVE_VULKAN
+        current_completion_={};
+#endif
+    }
     std::set<const char*> warned_;
     std::set<uint32_t> gpu_written_, unread_;
     std::map<uint32_t,std::pair<TextureDesc,Target>> targets_;
@@ -47,8 +97,13 @@ class GLBackend final : public Backend {
     struct LateRead { TextureDesc desc; std::future<std::vector<uint32_t>> future; };
     std::map<uint32_t,LateRead> late_;
     static void WritePixels(uint32_t address,const TextureDesc& desc,const std::vector<uint32_t>& pixels) {
+            if(pixels.size()!=size_t(desc.width)*desc.height) throw std::runtime_error("GPU readback size mismatch");
             for(unsigned y=0;y<desc.height;y++) for(unsigned x=0;x<desc.width;x++) {
-                const auto pixel=pixels[size_t(desc.height-1-y)*desc.width+x];
+#ifdef PGR1_NATIVE_VULKAN
+                const auto pixel=pixels.at(size_t(y)*desc.width+x);
+#else
+                const auto pixel=pixels.at(size_t(desc.height-1-y)*desc.width+x);
+#endif
                 uint32_t offset=Format(desc.format).swizzled ? SwizzledOffset(x,y,desc.width,desc.height)*4 : y*desc.pitch+x*4;
                 if(desc.format==0x2c || desc.format==0x30) {
                     const uint16_t value=uint16_t(pixel);
@@ -78,7 +133,7 @@ class GLBackend final : public Backend {
 
     void Unsupported(const char* reason) {
         ++unsupported_;
-        if(warned_.insert(reason).second) LOGR("gldirect: unsupported %s (draws remain counted in window)",reason);
+        if(warned_.insert(reason).second) LOGR("%s: unsupported %s (draws remain counted in telemetry)",kBackendName,reason);
     }
     bool TargetOf(const State& s, Target& t) {
         TextureDesc rt, zs;
@@ -103,7 +158,11 @@ public:
         // No global flag is toggled around individual draws.
         g_raw_vertices=false;
         if(const char* compare=std::getenv("PGR1_COMPARE_FRAME")) compare_frame_=std::strtoull(compare,nullptr,10);
+#ifdef PGR1_NATIVE_VULKAN
+        LOGR("vulkan-capture: PGR1 SDK command capture %ux%u; SDK HLSL -> Vulkan SPIR-V, owned FIFO",w,h);
+#else
         LOGR("gldirect: GPU FVF XYZRHW renderer %ux%u; SDK HLSL/SPIR-V/GLSL shaders enabled",w,h);
+#endif
         return true;
     }
     void Clear(const State& s,uint32_t n,const uint8_t* rects,uint32_t flags,uint32_t color,float z,uint32_t stencil) override {
@@ -117,6 +176,9 @@ public:
         gpu_written_.insert(c.target.color); unread_.insert(c.target.color); gpu_epoch_[c.target.color]=DirtyEpoch(c.target.color);
         if(c.target.depth) { gpu_written_.insert(c.target.depth); unread_.insert(c.target.depth); gpu_epoch_[c.target.depth]=DirtyEpoch(c.target.depth); }
         frame_.commands.push_back(std::move(c));
+#ifdef PGR1_NATIVE_VULKAN
+        Use(s.rt.header); Use(s.zs.header);
+#endif
     }
     void Draw(const State& s,uint32_t prim,uint32_t start,uint32_t count,const uint8_t* indices) override {
         ++draws_;
@@ -142,7 +204,7 @@ public:
         }
         if(program) for(size_t i=0;i+3<s.vs->program.size();i+=4) {
             unsigned op=(s.vs->program[i+1]>>21)&15;
-            if(op>13) { Unsupported("unknown NV2A MAC opcode"); DumpRejected("vs",s.vs->program); LOGR("gldirect: VS %llx instruction %zu opcode %u",(unsigned long long)s.vs->hash,i/4,op); return; }
+            if(op>13) { Unsupported("unknown NV2A MAC opcode"); DumpRejected("vs",s.vs->program); LOGR("%s: VS %llx instruction %zu opcode %u",kBackendName,(unsigned long long)s.vs->hash,i/4,op); return; }
         }
         if(s.rs[kRsPointSpriteEnable] || s.aa_x!=1 || s.aa_y!=1) {
             Unsupported("point sprites/MSAA"); return;
@@ -238,7 +300,7 @@ public:
         }
         Assembled a;
         const auto assembly_start=std::chrono::steady_clock::now();
-        if(!Assemble(s,prim,start,count,indices,a)) return;
+        if(!Assemble(s,prim,start,count,indices,a)) { Unsupported("SDK primitive/vertex assembly failed"); return; }
         frame_.assemble_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-assembly_start).count();
         if(a.vertices.empty() || !(a.regs&1)) { Unsupported("raw or missing position attributes"); return; }
         if(a.pretransformed && (c.target.height==480 || c.target.height==576) && c.target.width>=c.target.height &&
@@ -273,6 +335,7 @@ public:
                     if(at!=std::string::npos) source->insert(at,"nointerpolation ");
                 }
             }
+#ifndef PGR1_NATIVE_VULKAN
             const std::string marker="    float4 tc0 = i.tc0, tc1 = i.tc1, tc2 = i.tc2, tc3 = i.tc3;\n";
             std::string flip;
             for(unsigned i=0;i<4;i++) if(tex_info[i].flags&1) {
@@ -280,10 +343,15 @@ public:
                 flip+="    tc"+n+".y = "+(tex_info[i].rect ? "texsize["+n+"].y" : "1.0")+" * tc"+n+".w - tc"+n+".y;\n";
             }
             if(!flip.empty()) ps.insert(ps.find(marker)+marker.size(),flip);
+#endif
+#ifdef PGR1_NATIVE_VULKAN
+            shaders->spirv=CompileHlslPairSpirvAsync(std::move(vs),std::move(ps));
+#else
             try { shaders->vertex=CompileHlsl(vs,true); shaders->fragment=CompileHlsl(ps,false); }
             catch(const std::exception& e) { Fail(e.what()); return; }
+#endif
             pair=shaders;
-            LOGR("gldirect: translated shader pair %llx/%llx",(unsigned long long)vh,(unsigned long long)ph);
+            LOGR("%s: shader pair %llx/%llx",kBackendName,(unsigned long long)vh,(unsigned long long)ph);
         }
         c.shaders=pair; c.vertex_constants=s.vsc;
         // The SDK loads declaration constants on SetVertexShader. State::vsc also
@@ -300,13 +368,51 @@ public:
             auto& o=c.vertices[i]; o={attrs[0],attrs[3],attrs[9],attrs};
 
         }
-        timer.supported=true;
         c.indices=a.indices;
         if(a.index_count && c.indices.size()!=a.index_count) { Unsupported("unexpected assembler index path"); return; }
         c.topology=a.topology==Topology::Points ? 0 : a.topology==Topology::Lines ? (a.strip?3:1) : (a.strip?5:4);
+#ifdef PGR1_NATIVE_VULKAN
+        if(pk.flat && c.topology!=0) {
+            // Xbox/GL flat colors come from the last primitive vertex. Vulkan
+            // 1.0 chooses the first. Rotate complete primitives without changing
+            // winding instead of requiring VK_EXT_provoking_vertex.
+            auto input=std::move(c.indices);
+            if(input.empty()) for(uint32_t i=0;i<c.vertices.size();i++) input.push_back(i);
+            c.indices.clear();
+            if(c.topology==5) {
+                for(size_t i=0;i+2<input.size();i++) {
+                    c.indices.push_back(input[i+2]);
+                    c.indices.push_back(input[i+(i&1)]);
+                    c.indices.push_back(input[i+1-(i&1)]);
+                }
+                c.topology=4;
+            } else if(c.topology==3) {
+                for(size_t i=0;i+1<input.size();i++) { c.indices.push_back(input[i+1]); c.indices.push_back(input[i]); }
+                c.topology=1;
+            } else {
+                const size_t step=c.topology==4?3:2;
+                for(size_t i=0;i+step<=input.size();i+=step) {
+                    c.indices.push_back(input[i+step-1]);
+                    for(size_t j=0;j+1<step;j++) c.indices.push_back(input[i+j]);
+                }
+            }
+        }
+#endif
+#ifdef PGR1_NATIVE_VULKAN
+        std::shared_future<uint64_t> visibility;
+        if(s.simple[kMCountEnable/4]) {
+            c.visibility=std::make_shared<std::promise<uint64_t>>();
+            visibility=c.visibility->get_future().share();
+        }
+#endif
         gpu_written_.insert(c.target.color); unread_.insert(c.target.color); gpu_epoch_[c.target.color]=DirtyEpoch(c.target.color);
         if(c.target.depth) { gpu_written_.insert(c.target.depth); unread_.insert(c.target.depth); gpu_epoch_[c.target.depth]=DirtyEpoch(c.target.depth); }
         frame_.commands.push_back(std::move(c));
+        timer.supported=true;
+#ifdef PGR1_NATIVE_VULKAN
+        UseDraw(s);
+        if(visibility.valid()) counted_.push_back(std::move(visibility));
+#endif
     }
     void Present(const Surface& front) override {
         TextureDesc d; if(!DescribeSurface(front,d)) { Unsupported("present surface"); return; }
@@ -318,7 +424,10 @@ public:
             DecodeBgra(d,0,static_cast<const uint8_t*>(kernel::HostPtr(d.data)),frame_.reference_pixels);
         }
 #endif
-        Submit(std::move(frame_)); frame_={};
+#ifdef PGR1_NATIVE_VULKAN
+        Use(front.header);
+#endif
+        SubmitFrame();
 #ifdef PGR1_ENABLE_REFERENCE_COMPARE
         std::error_code diagnostic_error;
         if(std::filesystem::is_regular_file("compare",diagnostic_error) && std::filesystem::remove("compare",diagnostic_error))
@@ -329,7 +438,7 @@ public:
             for(const auto& [address,surface]:targets_) Sync(address,0);
         }
 #endif
-        if(frames_%60==0) LOGI("gldirect: frames %llu draws %llu unsupported %llu",(unsigned long long)frames_,(unsigned long long)draws_,(unsigned long long)unsupported_);
+        if(frames_%60==0) LOGI("%s: frames %llu draws %llu unsupported %llu",kBackendName,(unsigned long long)frames_,(unsigned long long)draws_,(unsigned long long)unsupported_);
     }
     void Copy(const Surface& src,const Surface& dst,uint32_t n,uint32_t r,uint32_t p) override {
 #ifdef PGR1_ENABLE_REFERENCE_COMPARE
@@ -349,6 +458,9 @@ public:
         }
         c.target.format=b.format;
         targets_[b.data]={b,c.target}; gpu_written_.insert(b.data); unread_.insert(b.data); gpu_epoch_[b.data]=DirtyEpoch(b.data); frame_.commands.push_back(std::move(c));
+#ifdef PGR1_NATIVE_VULKAN
+        Use(src.header); Use(dst.header);
+#endif
     }
     void Sync(uint32_t data,uint32_t size) override {
         for(const auto& [address,surface]:targets_) {
@@ -360,10 +472,12 @@ public:
             if(gpu_epoch_[address]!=DirtyEpoch(address)) { gpu_written_.erase(address); unread_.erase(address); continue; }
             Command c; c.kind=Command::Kind::Readback; c.target=target; c.read_depth=Format(desc.format).depth;
             c.readback=std::make_shared<std::promise<std::vector<uint32_t>>>(); auto future=c.readback->get_future();
-            frame_.commands.push_back(std::move(c)); frame_.present=false; frame_.frame=frames_+1; Submit(std::move(frame_)); frame_={};
+            frame_.commands.push_back(std::move(c)); frame_.present=false; frame_.frame=frames_+1; SubmitFrame();
             std::vector<uint32_t> pixels;
             try { pixels=future.get(); } catch(const std::exception& e) { Fail(std::string("GPU readback cancelled: ")+e.what()); return; }
-            WritePixels(address,desc,pixels); unread_.erase(address);
+            try { WritePixels(address,desc,pixels); }
+            catch(const std::exception& e) { Fail(e.what()); return; }
+            unread_.erase(address);
         }
     }
     void SyncLate(uint32_t data) override {
@@ -381,10 +495,64 @@ public:
         late_.emplace(data,LateRead{surface->second.first,c.readback->get_future()});
         frame_.commands.push_back(std::move(c));
     }
-    void Flush() override { if(!frame_.commands.empty()) { frame_.present=false; frame_.frame=frames_+1; Submit(std::move(frame_)); frame_={}; } }
+    void Flush() override { if(!frame_.commands.empty() || frame_.completion) { frame_.present=false; frame_.frame=frames_+1; SubmitFrame(); } }
     void SetGamma(const uint8_t*) override { Unsupported("gamma ramp"); }
+#ifdef PGR1_NATIVE_VULKAN
+    uint32_t Fence() override {
+        // Prune completed tokens. A retired token is permanently nonpending;
+        // resource futures retain their own references until those uses retire.
+        for(auto it=fences_.begin();it!=fences_.end();) {
+            if(!Pending(it->second)) it=fences_.erase(it); else ++it;
+        }
+        do { ++next_fence_; } while(!next_fence_ || fences_.contains(next_fence_));
+        fences_[next_fence_]=Completion();
+        Flush();
+        return next_fence_;
+    }
+    bool FencePending(uint32_t fence) override {
+        const auto found=fences_.find(fence);
+        return found!=fences_.end() && Pending(found->second);
+    }
+    void WaitFence(uint32_t fence) override {
+        const auto found=fences_.find(fence);
+        if(found!=fences_.end()) { WaitCompletion(found->second); fences_.erase(found); }
+    }
+    bool Busy(uint32_t resource) override {
+        const auto found=resource_use_.find(resource);
+        if(found==resource_use_.end()) return false;
+        // A guest polling IsBusy must let the recorded prefix reach the device.
+        Flush();
+        if(Pending(found->second)) return true;
+        resource_use_.erase(found); return false;
+    }
+    void WaitResource(uint32_t resource) override {
+        const auto found=resource_use_.find(resource);
+        if(found==resource_use_.end()) return;
+        Flush(); WaitCompletion(found->second); resource_use_.erase(found);
+    }
+    void ClearReport() override { counted_.clear(); }
+#endif
     void GetReport(uint32_t r) override {
+#ifdef PGR1_NATIVE_VULKAN
+        // A report is an ordered GPU operation, even with no counted draws.
+        // Preserve the SDK's 16-byte time/count/status layout. Unsupported or
+        // cancelled work leaves its pending status intact, never a fake result.
+        const auto completed=Completion();
+        Flush();
+        uint64_t count=0;
+        constexpr uint64_t limit=UINT32_MAX;
+        try {
+            completed.get();
+            for(const auto& query:counted_) count=std::min(limit,count+std::min(limit,query.get()));
+        } catch(const std::exception& e) {
+            Fail(std::string("GPU visibility report cancelled: ")+e.what()); return;
+        }
+        kernel::W32(r,uint32_t(frames_)); kernel::W32(r+4,0); kernel::W32(r+8,uint32_t(count));
+        std::atomic_thread_fence(std::memory_order_release);
+        kernel::W32(r+12,0);
+#else
         kernel::W32(r,uint32_t(frames_)); kernel::W32(r+4,0); kernel::W32(r+8,0); kernel::W32(r+12,0);
+#endif
     }
 };
 }
