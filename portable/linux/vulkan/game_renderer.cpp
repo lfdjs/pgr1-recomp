@@ -136,6 +136,18 @@ struct Renderer::Impl {
     using ImagePtr=std::shared_ptr<Image>;
     std::map<uint32_t,ImagePtr> colors,depths;
     std::map<std::weak_ptr<const TexturePixels>,ImagePtr,std::owner_less<std::weak_ptr<const TexturePixels>>> textures;
+    // GPU-reflection cubes share immutable CPU texels but contain faces that the
+    // game renders into separate targets. Rebuilding/uploading all six faces on
+    // every car draw is prohibitively expensive on RADV/Polaris.
+    struct DynamicCube {
+        ImagePtr image;
+        std::array<uint32_t,6> face_targets{};
+        std::array<uint64_t,6> copied_versions{};
+    };
+    std::map<std::weak_ptr<const TexturePixels>,DynamicCube,
+        std::owner_less<std::weak_ptr<const TexturePixels>>> dynamic_cubes;
+    std::map<uint32_t,uint64_t> color_versions;
+    uint64_t color_serial=0;
     ImagePtr white,white_cube,front;
     std::vector<ImagePtr> retained;
     std::vector<std::unique_ptr<Buffer>> buffers;
@@ -319,6 +331,9 @@ struct Renderer::Impl {
             // Opaque guest formats are lowered by the SDK's kTexOpaque shader
             // flag. Keep the storage/view neutral when Xbox reinterprets ARGB.
             image=NewImage(target.width,target.height,format);
+            // Reused Xbox addresses can refer to newly allocated GPU images.
+            // A new source invalidates the corresponding reflection face.
+            if(!depth) color_versions[address]=++color_serial;
         }
         return image;
     }
@@ -436,20 +451,51 @@ struct Renderer::Impl {
         unsigned layers=t.cube?6:1;
         if(t.pixels->levels.empty() || t.pixels->levels.size()%layers)throw std::runtime_error("incomplete cube/mip snapshot");
         unsigned levels=t.pixels->levels.size()/layers;
-        auto image=NewImage(t.width,t.height,VK_FORMAT_B8G8R8A8_UNORM,levels,layers);
-        for(unsigned face=0;face<layers;face++)for(unsigned level=0;level<levels;level++) {
-            unsigned w=std::max(1u,t.width>>level),h=std::max(1u,t.height>>level); const auto& pixels=t.pixels->levels[face*levels+level];
-            if(pixels.size()!=size_t(w)*h)throw std::runtime_error("texture mip snapshot size mismatch");
-            auto* upload=NewBuffer(pixels.size()*4,VK_BUFFER_USAGE_TRANSFER_SRC_BIT,pixels.data());
-            VkBufferImageCopy copy{}; copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,level,face,1}; copy.imageExtent={w,h,1};
-            vkCmdCopyBufferToImage(cmd,upload->buffer,image->image,VK_IMAGE_LAYOUT_GENERAL,1,&copy);
+        if(dynamic && !t.cube)throw std::runtime_error("dynamic reflection faces require a cubemap");
+        DynamicCube* entry=nullptr;
+        bool reuse=false;
+        if(dynamic) {
+            auto [it,inserted]=dynamic_cubes.try_emplace(std::weak_ptr<const TexturePixels>(t.pixels));
+            (void)inserted;
+            entry=&it->second;
+            reuse=entry->image && entry->image->w==t.width && entry->image->h==t.height &&
+                  entry->image->levels==levels && entry->face_targets==t.face_targets;
         }
-        Barrier();
+        auto image=reuse?entry->image:NewImage(t.width,t.height,VK_FORMAT_B8G8R8A8_UNORM,levels,layers);
+        if(reuse)++stats.cube_cache_hits;
+        else {
+            // Upload immutable CPU texels only once per reflection cube. GPU
+            // faces are refreshed separately, based on actual target writes.
+            for(unsigned face=0;face<layers;face++)for(unsigned level=0;level<levels;level++) {
+                unsigned w=std::max(1u,t.width>>level),h=std::max(1u,t.height>>level); const auto& pixels=t.pixels->levels[face*levels+level];
+                if(pixels.size()!=size_t(w)*h)throw std::runtime_error("texture mip snapshot size mismatch");
+                auto* upload=NewBuffer(pixels.size()*4,VK_BUFFER_USAGE_TRANSFER_SRC_BIT,pixels.data());
+                VkBufferImageCopy copy{}; copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,level,face,1}; copy.imageExtent={w,h,1};
+                vkCmdCopyBufferToImage(cmd,upload->buffer,image->image,VK_IMAGE_LAYOUT_GENERAL,1,&copy);
+            }
+            Barrier();
+            if(dynamic) {
+                entry->image=image;
+                entry->face_targets=t.face_targets;
+                entry->copied_versions.fill(0);
+                ++stats.cube_cache_creates;
+            } else textures[t.pixels]=image;
+        }
         if(dynamic)for(unsigned face=0;face<6;face++)if(t.face_targets[face]) {
-            auto source=colors.find(t.face_targets[face]); if(source==colors.end())throw std::runtime_error("cubemap face target missing");
-            Blit(source->second,image,{0,0,int(source->second->w),int(source->second->h)},{0,0,int(image->w),int(image->h)},face);
+            const uint32_t address=t.face_targets[face];
+            auto source=colors.find(address); if(source==colors.end())throw std::runtime_error("cubemap face target missing");
+            const uint64_t version=color_versions[address];
+            if(!reuse || entry->copied_versions[face]!=version) {
+                // Ordered copy only when a real GPU target changed. A later
+                // draw in this submission sees the new face; earlier draws
+                // remain ordered by Blit's barriers, without extra GPU work.
+                Blit(source->second,image,{0,0,int(source->second->w),int(source->second->h)},
+                    {0,0,int(image->w),int(image->h)},face);
+                entry->copied_versions[face]=version;
+                ++stats.cube_face_copies;
+            }
         }
-        if(!dynamic)textures[t.pixels]=image; return image;
+        return image;
     }
     void Blit(const ImagePtr& source,const ImagePtr& target,Rect a,Rect b,unsigned layer=0) {
         if(source==target)throw std::runtime_error("GPU resource feedback/copy overlap unsupported");
@@ -543,6 +589,10 @@ struct Renderer::Impl {
         if(occlusion_pool)vkDestroyQueryPool(device,occlusion_pool,nullptr);
         occlusion_pool=VK_NULL_HANDLE; counted.clear();
         for(auto it=textures.begin();it!=textures.end();)if(it->first.expired())it=textures.erase(it);else ++it;
+        // Do not retain obsolete cubemaps after the producer drops its CPU
+        // snapshot. Active snapshots remain cached across game submissions.
+        for(auto it=dynamic_cubes.begin();it!=dynamic_cubes.end();)
+            if(it->first.expired())it=dynamic_cubes.erase(it);else ++it;
     }
     void Recreate() {
         int w=0,h=0; SDL_GetWindowSizeInPixels(window,&w,&h); if(w<=0 || h<=0)return;
@@ -618,7 +668,8 @@ struct Renderer::Impl {
                 auto source=colors.find(c.source); if(source==colors.end())throw std::runtime_error("Copy source was never rendered");
                 auto target=TargetImage(c.target);
                 if(c.rects.size()!=c.destination_rects.size())throw std::runtime_error("invalid owned CopyRects payload");
-                for(size_t j=0;j<c.rects.size();j++)Blit(source->second,target,c.rects[j],c.destination_rects[j]); continue;
+                for(size_t j=0;j<c.rects.size();j++)Blit(source->second,target,c.rects[j],c.destination_rects[j]);
+                color_versions[c.target.color]=++color_serial; continue;
             }
             if(c.kind==Command::Kind::Clear) {
                 if((c.flags&0xf0) && (c.flags&0xf0)!=0xf0)throw std::runtime_error("partial color-channel Clear unsupported; aborting rather than corrupting retained target");
@@ -628,7 +679,7 @@ struct Renderer::Impl {
                 std::vector<VkClearRect> rects; for(auto r:c.rects) { auto rect=Clip(r,c.target.width,c.target.height); if(rect.extent.width && rect.extent.height)rects.push_back({rect,0,1}); }
                 if(c.rects.empty())rects.push_back({{{0,0},{c.target.width,c.target.height}},0,1});
                 if(!clears.empty() && !rects.empty())vkCmdClearAttachments(cmd,clears.size(),clears.data(),rects.size(),rects.data());
-                vkCmdEndRenderPass(cmd); continue;
+                vkCmdEndRenderPass(cmd); color_versions[c.target.color]=++color_serial; continue;
             }
             // Validate and create resources outside the render pass; uploads and
             // barriers must never be recorded inside a Vulkan 1.0 subpass.
@@ -661,7 +712,7 @@ struct Renderer::Impl {
             };
             if(p.scissors.empty())draw(p.viewport); else for(auto r:p.scissors)draw(r);
             if(c.visibility) { vkCmdEndQuery(cmd,occlusion_pool,query); counted.push_back({c.visibility,query}); }
-            vkCmdEndRenderPass(cmd); ++stats.accepted;
+            vkCmdEndRenderPass(cmd); color_versions[c.target.color]=++color_serial; ++stats.accepted;
         }
         Barrier(); stats.execute_ms=Millis(execute);
         bool present=false; unsigned image_index=0;

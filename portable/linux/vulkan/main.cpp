@@ -185,12 +185,13 @@ int main(int argc, char** argv) {
     const double seconds=std::getenv("PGR1_RUN_SECONDS")?std::atof(std::getenv("PGR1_RUN_SECONDS")):0;
     auto ms=[](auto duration) { return std::chrono::duration<double,std::milli>(duration).count(); };
     std::ofstream timings("frames.csv"),submissions("submissions.csv"),gpu_times("gpu.csv");
-    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed\n";
-    submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed\n";
+    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies\n";
+    submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies\n";
     gpu_times<<"frame,gpu_ms\n";
     pgr::gldirect::Submission pending{};
     double execute_ms=0,shader_ms=0,fence_ms=0,acquire_ms=0,present_ms=0,gpu_ms=0;
     std::uint64_t accepted=0,rejected=0,indexed=0,nonindexed=0,total_frames=0,total_accepted=0,total_rejected=0,last_guest_frame=0;
+    std::uint64_t cube_creates=0,cube_hits=0,cube_copies=0;
     int output_width=0,output_height=0;
     bool captured_frame=false;
     while (running && !boot_failed.load()) {
@@ -251,7 +252,7 @@ int main(int argc, char** argv) {
             submissions<<next.frame<<','<<next.present<<','<<stats.presented<<','<<next.draw_ns/1e6<<','
                 <<next.queue_wait_ns/1e6<<','<<stats.execute_ms<<','<<stats.shader_ms<<','<<stats.fence_ms<<','
                 <<stats.acquire_ms<<','<<stats.present_ms<<','<<completed_gpu_ms<<','<<stats.gpu_frame<<','<<stats.accepted<<','
-                <<stats.rejected<<','<<stats.indexed<<','<<stats.nonindexed<<','<<stats.acquire_timeout<<','<<!render_ok<<'\n';
+                <<stats.rejected<<','<<stats.indexed<<','<<stats.nonindexed<<','<<stats.acquire_timeout<<','<<!render_ok<<','<<stats.cube_cache_creates<<','<<stats.cube_cache_hits<<','<<stats.cube_face_copies<<'\n';
             pending.draw_ns+=next.draw_ns; pending.decode_ns+=next.decode_ns;
             pending.texture_check_ns+=next.texture_check_ns; pending.assemble_ns+=next.assemble_ns;
             pending.max_draw_ns=std::max(pending.max_draw_ns,next.max_draw_ns);
@@ -260,6 +261,7 @@ int main(int argc, char** argv) {
             execute_ms+=stats.execute_ms; shader_ms+=stats.shader_ms; fence_ms+=stats.fence_ms;
             acquire_ms+=stats.acquire_ms; present_ms+=stats.present_ms; gpu_ms+=completed_gpu_ms;
             accepted+=stats.accepted; rejected+=stats.rejected; indexed+=stats.indexed; nonindexed+=stats.nonindexed;
+            cube_creates+=stats.cube_cache_creates; cube_hits+=stats.cube_cache_hits; cube_copies+=stats.cube_face_copies;
             if (next.present) {
                 const auto at=std::chrono::steady_clock::now();
                 const auto cpu=std::clock();
@@ -268,11 +270,12 @@ int main(int argc, char** argv) {
                     <<pending.texture_check_ns/1e6<<','<<pending.assemble_ns/1e6<<','<<pending.queue_wait_ns/1e6<<','
                     <<execute_ms<<','<<shader_ms<<','<<fence_ms<<','<<acquire_ms<<','<<present_ms<<','<<gpu_ms<<','
                     <<pending.supported<<','<<pending.rejected_draws<<','<<accepted<<','<<rejected<<','<<indexed<<','
-                    <<nonindexed<<','<<stats.presented<<','<<stats.acquire_timeout<<','<<!render_ok<<'\n';
+                    <<nonindexed<<','<<stats.presented<<','<<stats.acquire_timeout<<','<<!render_ok<<','<<cube_creates<<','<<cube_hits<<','<<cube_copies<<'\n';
                 if (stats.presented) ++total_frames;
                 last_frame=at; last_cpu=cpu; pending={};
                 execute_ms=shader_ms=fence_ms=acquire_ms=present_ms=gpu_ms=0;
                 accepted=rejected=indexed=nonindexed=0;
+                cube_creates=cube_hits=cube_copies=0;
             }
             if (!render_ok) { boot_failed=true; break; }
             if (!next.reference_pixels.empty()) renderer->Compare(next);

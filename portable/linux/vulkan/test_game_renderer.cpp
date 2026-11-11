@@ -271,6 +271,18 @@ int main() {
     pixels=Execute(renderer,{source_clear,cube});Pixel(pixels,16,16,0xff00ff00);
     source_clear.color=0xffff0000;
     pixels=Execute(renderer,{source_clear,cube});Pixel(pixels,16,16,0xffff0000);
+    // The same reflection cube is sampled twice with no intervening GPU
+    // source write. It should create no image or re-blit any unchanged face.
+    pixels=Execute(renderer,{cube,cube});Pixel(pixels,16,16,0xffff0000);
+    assert(renderer.LastStats().cube_cache_hits>=2);
+    assert(renderer.LastStats().cube_cache_creates==0);
+    assert(renderer.LastStats().cube_face_copies==0);
+    // If a car reflection face changes *within a submission*, the second
+    // draw must see it; only that one face should be re-copied.
+    source_clear.color=0xff00ff00;
+    pixels=Execute(renderer,{cube,source_clear,cube});Pixel(pixels,16,16,0xff00ff00);
+    assert(renderer.LastStats().cube_cache_hits>=2);
+    assert(renderer.LastStats().cube_face_copies==1);
 
     // Render-target texture sampling has guest top-left orientation. It must
     // not inherit the extra vertical flip used by the OpenGL backend.

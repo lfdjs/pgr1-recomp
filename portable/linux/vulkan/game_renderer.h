@@ -12,6 +12,8 @@ public:
         double fence_ms=0, acquire_ms=0, execute_ms=0, present_ms=0, gpu_ms=0;
         double shader_ms=0, cpu_ms=0;
         std::uint64_t accepted=0, rejected=0, indexed=0, nonindexed=0, gpu_frame=0;
+        // Dynamic reflection-cube cache diagnostics, per submitted batch.
+        std::uint64_t cube_cache_creates=0, cube_cache_hits=0, cube_face_copies=0;
         bool presented=false;
         bool acquire_timeout=false;
         std::vector<GpuSample> gpu_samples;
