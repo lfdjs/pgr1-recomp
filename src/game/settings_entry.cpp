@@ -19,6 +19,9 @@
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
+#ifdef PGR1_NATIVE_VULKAN
+#include "../../portable/linux/vulkan/quality_state.h"
+#endif
 
 namespace pgr1 {
 
@@ -99,7 +102,12 @@ struct Row {
 
 Choices OnOff() { return {"off", "on"}; }
 
-const std::vector<uint32_t> kRender = {25, 50, 75, 100, 125, 150, 175, 200}, kAniso = {0, 2, 4, 8, 16},
+#ifdef PGR1_NATIVE_VULKAN
+const std::vector<uint32_t> kRender = {0, 25, 50, 75, 100, 125, 150, 175, 200};
+#else
+const std::vector<uint32_t> kRender = {25, 50, 75, 100, 125, 150, 175, 200};
+#endif
+const std::vector<uint32_t> kAniso = {0, 2, 4, 8, 16},
                             kFov = {75, 90, 100, 110, 125, 150}, kRadio = {0, 50, 100, 150, 200, 300, 400}, kRates = {60, 90, 120, 144},
                             kSharpen = {0, 25, 50, 75, 100}, kCaps = {30, 60, 120, 144, 240, 0},
                             kSens = {25, 50, 75, 100, 150, 200, 400, 800},
@@ -109,6 +117,11 @@ const std::vector<uint32_t> kRender = {25, 50, 75, 100, 125, 150, 175, 200}, kAn
 
 std::vector<app::Mode> ResolutionList() {
     std::vector<app::Mode> list = app::ListModes();
+#ifdef PGR1_NATIVE_VULKAN
+    const auto width=pgr::vulkan::quality::output_width.load(),height=pgr::vulkan::quality::output_height.load();
+    if(width && height && std::none_of(list.begin(),list.end(),[&](const app::Mode& m) { return m.width==width && m.height==height; }))
+        list.insert(list.begin(),{width,height});
+#endif
     if (list.size() > 7) list.resize(7);
     return list;
 }
@@ -122,15 +135,51 @@ uint32_t NearestCap(uint32_t cap) {
 void WheelChanged() { input::WheelSetup(); }
 
 const std::vector<Row> kPicture = {
-    {"msaa",
-     [] { return Choices{"off", "2x", "4x", "8x"}; },
+#ifdef PGR1_NATIVE_VULKAN
+    {"msaa", [] {
+         Choices c{"off"};
+         const unsigned mask=pgr::vulkan::quality::msaa_supported_mask.load();
+         const unsigned requested=pgr::vulkan::quality::msaa.load(),applied=pgr::vulkan::quality::msaa_applied.load();
+         if(requested==0 && requested!=applied) c[0]+=" (pending)";
+         if(mask&2) c.push_back(requested==1 && requested!=applied?"2x (pending)":"2x");
+         if(mask&4) c.push_back(requested==2 && requested!=applied?"4x (pending)":"4x");
+         return c;
+     },
+     [] {
+         const unsigned requested=pgr::vulkan::quality::msaa.load();
+         const unsigned mask=pgr::vulkan::quality::msaa_supported_mask.load();
+         if(requested==1 && (mask&2)) return 1u;
+         if(requested==2 && (mask&4)) return (mask&2)?2u:1u;
+         return 0u;
+     },
+     [](uint32_t i) {
+         const unsigned mask=pgr::vulkan::quality::msaa_supported_mask.load();
+         unsigned selected=0,choice=0;
+         for(unsigned mode=1;mode<=2;mode++) if(mask&(1u<<mode)) { if(++choice==i) selected=mode; }
+         app::Get().msaa=selected;
+         pgr::vulkan::quality::msaa.store(selected);
+     }},
+#else
+    {"msaa", [] { return Choices{"off", "2x", "4x", "8x"}; },
      [] { return std::min<uint32_t>(app::Get().msaa, 3); },
      [](uint32_t i) { app::Get().msaa = i; }},
+#endif
+#ifdef PGR1_NATIVE_VULKAN
+    {"smooth alpha (MSAA)", OnOff,
+#else
     {"smooth alpha", OnOff,
+#endif
      [] { return uint32_t(app::Get().alpha_coverage); },
      [](uint32_t i) { app::Get().alpha_coverage = i != 0; }},
-    {"edge smoothing",
-     [] { return Choices{"off", "fxaa", "smaa"}; },
+#ifdef PGR1_NATIVE_VULKAN
+    {"edge smoothing", [] { return pgr::vulkan::quality::postfx_supported.load()?Choices{"off", "fxaa"}:Choices{"unavailable"}; },
+     [] { return uint32_t(pgr::vulkan::quality::fxaa.load()); },
+     [](uint32_t i) {
+         app::Get().fxaa=i==1; app::Get().smaa=false;
+         pgr::vulkan::quality::fxaa.store(i==1);
+     }},
+#else
+    {"edge smoothing", [] { return Choices{"off", "fxaa", "smaa"}; },
      [] {
          const app::Settings& s = app::Get();
          return s.smaa ? uint32_t(2) : uint32_t(s.fxaa);
@@ -139,48 +188,135 @@ const std::vector<Row> kPicture = {
          app::Get().fxaa = i == 1;
          app::Get().smaa = i == 2;
      }},
+#endif
     {"sharpening",
-     [] { return Choices{"off", "25%", "50%", "75%", "100%"}; },
-     [] { return Nearest(kSharpen, app::Get().sharpen); },
-     [](uint32_t i) { app::Get().sharpen = kSharpen[i]; }},
+     [] {
+#ifdef PGR1_NATIVE_VULKAN
+         if(!pgr::vulkan::quality::postfx_supported.load()) return Choices{"unavailable"};
+#endif
+         return Choices{"off", "25%", "50%", "75%", "100%"};
+     },
+     [] {
+#ifdef PGR1_NATIVE_VULKAN
+         return Nearest(kSharpen,pgr::vulkan::quality::sharpen_percent.load());
+#else
+         return Nearest(kSharpen,app::Get().sharpen);
+#endif
+     },
+     [](uint32_t i) { app::Get().sharpen = kSharpen[i];
+#ifdef PGR1_NATIVE_VULKAN
+         pgr::vulkan::quality::sharpen_percent.store(kSharpen[i]);
+#endif
+     }},
     {"texture filtering",
-     [] { return Choices{"game", "2x", "4x", "8x", "16x"}; },
-     [] { return Nearest(kAniso, app::Get().aniso); },
-     [](uint32_t i) { app::Get().aniso = kAniso[i]; }},
+     [] {
+         Choices c{"game"};
+         for(uint32_t value:kAniso) if(value) {
+#ifdef PGR1_NATIVE_VULKAN
+             if(value>pgr::vulkan::quality::aniso_supported_max.load()) continue;
+#endif
+             c.push_back(std::to_string(value)+"x");
+         }
+         return c;
+     },
+     [] {
+#ifdef PGR1_NATIVE_VULKAN
+         const unsigned value=std::min(pgr::vulkan::quality::aniso.load(),pgr::vulkan::quality::aniso_supported_max.load());
+         unsigned selected=0;
+         for(unsigned i=1;i<kAniso.size();i++) if(kAniso[i]<=value) selected=i;
+         return selected;
+#else
+         return Nearest(kAniso,app::Get().aniso);
+#endif
+     },
+     [](uint32_t i) { app::Get().aniso = kAniso[i];
+#ifdef PGR1_NATIVE_VULKAN
+         pgr::vulkan::quality::aniso.store(kAniso[i]);
+#endif
+     }},
+#ifdef PGR1_NATIVE_VULKAN
+    {"smaa", [] { return Choices{"unavailable"}; }, [] { return 0u; }, [](uint32_t) {}},
+    {"world textures", [] { return Choices{"unavailable"}; }, [] { return 0u; }, [](uint32_t) {}},
+    {"sharp text and hud", [] { return Choices{"unavailable"}; }, [] { return 0u; }, [](uint32_t) {}},
+#else
     {"world textures", OnOff,
      [] { return uint32_t(app::Get().world_textures); },
      [](uint32_t i) { app::Get().world_textures = i != 0; }},
     {"sharp text and hud", OnOff,
      [] { return uint32_t(app::Get().sharp_2d); },
      [](uint32_t i) { app::Get().sharp_2d = i != 0; }},
+#endif
 };
 
 const std::vector<Row> kPerformance = {
     {"render scale",
-     [] { return Choices{"25%", "50%", "75%", "100%", "125%", "150%", "175%", "200%"}; },
-     [] { return Nearest(kRender, app::Get().render_percent); },
-     [](uint32_t i) { app::Get().render_percent = kRender[i]; }},
+     [] {
+#ifdef PGR1_NATIVE_VULKAN
+         return Choices{"guest", "25%", "50%", "75%", "100%", "125%", "150%", "175%", "200%"};
+#else
+         return Choices{"25%", "50%", "75%", "100%", "125%", "150%", "175%", "200%"};
+#endif
+     },
+     [] {
+#ifdef PGR1_NATIVE_VULKAN
+         const unsigned value=pgr::vulkan::quality::render_percent.load();
+         return Nearest(kRender,value);
+#else
+         return Nearest(kRender,app::Get().render_percent);
+#endif
+     },
+     [](uint32_t i) { app::Get().render_percent = kRender[i];
+#ifdef PGR1_NATIVE_VULKAN
+         pgr::vulkan::quality::render_percent.store(kRender[i]);
+#endif
+     }},
     {"scaling filter",
-     [] { return Choices{"bilinear", "sharp"}; },
-     [] { return app::Get().scale_filter % 2; },
-     [](uint32_t i) { app::Get().scale_filter = i; }},
+     [] {
+#ifdef PGR1_NATIVE_VULKAN
+         if(!pgr::vulkan::quality::postfx_supported.load()) return Choices{"bilinear (fixed)"};
+#endif
+         return Choices{"bilinear", "sharp"};
+     },
+     [] {
+#ifdef PGR1_NATIVE_VULKAN
+         return uint32_t(pgr::vulkan::quality::sharp_scaling.load());
+#else
+         return app::Get().scale_filter%2;
+#endif
+     },
+     [](uint32_t i) { app::Get().scale_filter = i;
+#ifdef PGR1_NATIVE_VULKAN
+         pgr::vulkan::quality::sharp_scaling.store(i==1);
+#endif
+     }},
     {"frame rate cap",
      [] { return Choices{"30", "60", "120", "144", "240", "none"}; },
      [] { return NearestCap(app::Get().fps_cap); },
      [](uint32_t i) { app::Get().fps_cap = kCaps[i]; }},
+#ifdef PGR1_NATIVE_VULKAN
+    {"low latency", [] { return Choices{"single frame (fixed)"}; }, [] { return 0u; }, [](uint32_t) {}},
+#else
     {"low latency", OnOff,
      [] { return uint32_t(app::Get().low_latency); },
      [](uint32_t i) { app::Get().low_latency = i != 0; }},
+#endif
     {"frame counter", OnOff,
      [] { return uint32_t(app::Get().show_fps); },
      [](uint32_t i) { app::Get().show_fps = i != 0; }},
-    {"renderer",
-     [] { return Choices{"direct3d 12", "direct3d 11"}; },
+#ifdef PGR1_NATIVE_VULKAN
+    {"renderer", [] { return Choices{"vulkan native"}; },
+     [] { return 0u; }, [](uint32_t) {}},
+#else
+    {"renderer", [] { return Choices{"direct3d 12", "direct3d 11"}; },
      [] { return app::Get().renderer % 2; },
      [](uint32_t i) { app::Get().renderer = i; }},
+#endif
 };
 
 const std::vector<Row> kDisplay = {
+#ifdef PGR1_NATIVE_VULKAN
+    {"monitor", [] { return Choices{"primary (fixed)"}; }, [] { return 0u; }, [](uint32_t) {}},
+#else
     {"monitor",
      [] {
          Choices c{"primary"};
@@ -193,9 +329,16 @@ const std::vector<Row> kDisplay = {
          app::Get().monitor = i;
          app::ApplyDisplay();
      }},
+#endif
     {"mode",
      [] { return Choices{"fullscreen", "borderless", "window"}; },
-     [] { return uint32_t(app::Get().display_mode) % 3; },
+     [] {
+#ifdef PGR1_NATIVE_VULKAN
+         return pgr::vulkan::quality::display_mode.load()%3;
+#else
+         return uint32_t(app::Get().display_mode)%3;
+#endif
+     },
      [](uint32_t i) {
          app::Get().display_mode = app::DisplayMode(i);
          app::ApplyDisplay();
@@ -207,10 +350,14 @@ const std::vector<Row> kDisplay = {
          return c;
      },
      [] {
-         const app::Settings& s = app::Get();
+#ifdef PGR1_NATIVE_VULKAN
+         const unsigned width=pgr::vulkan::quality::output_width.load(),height=pgr::vulkan::quality::output_height.load();
+#else
+         const unsigned width=app::Get().width,height=app::Get().height;
+#endif
          std::vector<app::Mode> list = ResolutionList();
          for (size_t i = 0; i < list.size(); i++)
-             if (list[i].width == s.width && list[i].height == s.height) return uint32_t(i + 1);
+             if (list[i].width == width && list[i].height == height) return uint32_t(i + 1);
          return uint32_t(0);
      },
      [](uint32_t i) {
@@ -221,8 +368,18 @@ const std::vector<Row> kDisplay = {
          app::ApplyDisplay();
      }},
     {"vertical sync", OnOff,
-     [] { return uint32_t(app::Get().vsync); },
-     [](uint32_t i) { app::Get().vsync = i != 0; }},
+     [] {
+#ifdef PGR1_NATIVE_VULKAN
+         return uint32_t(pgr::vulkan::quality::vsync.load());
+#else
+         return uint32_t(app::Get().vsync);
+#endif
+     },
+     [](uint32_t i) { app::Get().vsync = i != 0;
+#ifdef PGR1_NATIVE_VULKAN
+         pgr::vulkan::quality::vsync.store(i!=0);
+#endif
+     }},
     {"aspect ratio",
      [] { return Choices{"from screen", "4:3", "16:9", "fill screen"}; },
      [] { return app::Get().aspect % 4; },
@@ -230,7 +387,7 @@ const std::vector<Row> kDisplay = {
 };
 
 const std::vector<Row> kGame = {
-    {"game frame rate", [] { return Choices{"60", "90", "120", "144"}; },
+    {"game frame rate (restart)", [] { return Choices{"60", "90", "120", "144"}; },
      [] { return Nearest(kRates, frame_rate); },
      [](uint32_t i) {
          frame_rate = kRates[i];
@@ -253,9 +410,13 @@ const std::vector<Row> kGame = {
     {"skip intro", OnOff,
      [] { return uint32_t(skip_intro); },
      [](uint32_t i) { skip_intro = i != 0; }},
+#ifdef PGR1_NATIVE_VULKAN
+    {"pause in background", [] { return Choices{"unavailable"}; }, [] { return 0u; }, [](uint32_t) {}},
+#else
     {"pause in background", OnOff,
      [] { return uint32_t(app::Get().pause_unfocused); },
      [](uint32_t i) { app::Get().pause_unfocused = i != 0; }},
+#endif
 };
 
 const std::vector<Row> kControls = {

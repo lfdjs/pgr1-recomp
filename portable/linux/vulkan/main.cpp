@@ -28,6 +28,7 @@
 #include "game_renderer.h"
 #include "sdl_audio.h"
 #include "display.h"
+#include "quality_state.h"
 
 namespace fs = std::filesystem;
 namespace {
@@ -101,7 +102,6 @@ void SendCommand(const std::string& tokens) {
 void BootGame(fs::path game_dir, std::atomic<bool>& failed) {
     try {
         logx::Init((app::ExeDir() / "logs").string(), app::kGame.log);
-        app::Load();
         if (app::kGame.init) app::kGame.init();
         if (app::kGame.window) app::kGame.window(nullptr);
         const fs::path xbe_path = game_dir / IMAGE_XBE;
@@ -121,6 +121,53 @@ void BootGame(fs::path game_dir, std::atomic<bool>& failed) {
         std::fprintf(stderr, "vulkan: boot exception: %s\n", ex.what());
         failed = true;
     }
+}
+
+// SDL video calls stay on the main thread. The menu publishes a revision only
+// after its atomic display values are ready.
+void ApplyWindow(SDL_Window* window) {
+    namespace quality=pgr::vulkan::quality;
+    unsigned mode=quality::display_mode.load();
+    const auto desktop=app::Desktop();
+    unsigned width=quality::output_width.load(),height=quality::output_height.load();
+    if(!width || !height) { width=desktop.width; height=desktop.height; }
+    bool ok=SDL_SetWindowFullscreen(window,false);
+    if(mode==0) {
+        SDL_DisplayMode closest{};
+        const auto display=SDL_GetDisplayForWindow(window);
+        if(SDL_GetClosestFullscreenDisplayMode(display,int(width),int(height),0,true,&closest)) {
+            if(quality::output_width.load() && quality::output_height.load()) {
+                quality::output_width.store(unsigned(closest.w));
+                quality::output_height.store(unsigned(closest.h));
+            }
+            ok=SDL_SetWindowFullscreenMode(window,&closest) && ok;
+        }
+        else { mode=1; quality::display_mode.store(mode); }
+    }
+    if(mode==1)ok=SDL_SetWindowFullscreenMode(window,nullptr) && ok;
+    if(mode==2) {
+        ok=SDL_SetWindowSize(window,int(width),int(height)) && ok;
+        ok=SDL_SetWindowBordered(window,true) && ok;
+    } else ok=SDL_SetWindowFullscreen(window,true) && ok;
+    if(!ok) {
+        std::fprintf(stderr,"Vulkan display settings: %s; using a window\n",SDL_GetError());
+        SDL_SetWindowFullscreen(window,false);
+        SDL_SetWindowSize(window,int(width),int(height));
+        SDL_SetWindowBordered(window,true);
+        quality::display_mode.store(2);
+    }
+}
+void CaptureVariants(pgr::vulkan::Renderer& renderer) {
+    namespace quality=pgr::vulkan::quality;
+    const bool fxaa=quality::fxaa.load(),overlay=quality::show_fps.load();
+    const unsigned sharpen=quality::sharpen_percent.load();
+    const bool sharp=quality::sharp_scaling.load();
+    quality::show_fps.store(false); quality::sharpen_percent.store(0); quality::sharp_scaling.store(false);
+    quality::fxaa.store(false); renderer.Capture("fxaa-off.ppm");
+    quality::fxaa.store(true); renderer.Capture("fxaa-on.ppm");
+    quality::show_fps.store(true); renderer.Capture("fps-on.ppm");
+    quality::fxaa.store(fxaa); quality::show_fps.store(overlay);
+    quality::sharpen_percent.store(sharpen); quality::sharp_scaling.store(sharp);
 }
 } // namespace
 
@@ -147,18 +194,17 @@ int main(int argc, char** argv) {
     const auto* desktop=SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
     unsigned width=desktop?unsigned(desktop->w):1280,height=desktop?unsigned(desktop->h):720;
     pgr::gldirect::SetDesktopPixels(width,height);
-    const char* output=std::getenv("OUTPUT");
-    if (output) {
-        unsigned w=0,h=0;
-        if (std::sscanf(output,"%ux%u",&w,&h)==2 && w && h) { width=w; height=h; }
+    app::Load();
+    namespace quality=pgr::vulkan::quality;
+    if(quality::output_width.load() && quality::output_height.load()) {
+        width=quality::output_width.load(); height=quality::output_height.load();
     }
     pgr::gldirect::SetOutputPixels(width,height);
-    const char* fullscreen_option=std::getenv("PGR1_FULLSCREEN");
-    const bool fullscreen=fullscreen_option?*fullscreen_option!='0':!output;
-    const SDL_WindowFlags flags=SDL_WINDOW_RESIZABLE|SDL_WINDOW_VULKAN|SDL_WINDOW_HIGH_PIXEL_DENSITY|
-                               (fullscreen?SDL_WINDOW_FULLSCREEN:0);
+    const SDL_WindowFlags flags=SDL_WINDOW_RESIZABLE|SDL_WINDOW_VULKAN|SDL_WINDOW_HIGH_PIXEL_DENSITY;
     SDL_Window* window=SDL_CreateWindow("PGR1 - native Vulkan (04C experimental)",width,height,flags);
     if (!window) { std::fprintf(stderr,"SDL window: %s\n",SDL_GetError()); SDL_Quit(); return 1; }
+    ApplyWindow(window);
+    unsigned display_revision=quality::display_revision.load(std::memory_order_acquire);
     std::unique_ptr<pgr::vulkan::Renderer> renderer;
     try { renderer=std::make_unique<pgr::vulkan::Renderer>(window); }
     catch (const std::exception& ex) {
@@ -185,12 +231,14 @@ int main(int argc, char** argv) {
     const double seconds=std::getenv("PGR1_RUN_SECONDS")?std::atof(std::getenv("PGR1_RUN_SECONDS")):0;
     auto ms=[](auto duration) { return std::chrono::duration<double,std::milli>(duration).count(); };
     std::ofstream timings("frames.csv"),submissions("submissions.csv"),gpu_times("gpu.csv");
-    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies\n";
-    submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies\n";
+    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent\n";
+    submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent\n";
     gpu_times<<"frame,gpu_ms\n";
     pgr::gldirect::Submission pending{};
     double execute_ms=0,shader_ms=0,fence_ms=0,acquire_ms=0,present_ms=0,gpu_ms=0;
     std::uint64_t accepted=0,rejected=0,indexed=0,nonindexed=0,total_frames=0,total_accepted=0,total_rejected=0,last_guest_frame=0;
+    std::uint64_t staging_allocations=0,staging_reuses=0,descriptor_creates=0,
+                  descriptor_resets=0,framebuffer_hits=0,framebuffer_creates=0;
     std::uint64_t cube_creates=0,cube_hits=0,cube_copies=0;
     int output_width=0,output_height=0;
     bool captured_frame=false;
@@ -202,12 +250,18 @@ int main(int argc, char** argv) {
             if (event.type==SDL_EVENT_QUIT) running=false;
             else if (event.type==SDL_EVENT_KEY_DOWN) {
                 if (event.key.scancode==SDL_SCANCODE_ESCAPE) running=false;
-                else if (event.key.scancode==SDL_SCANCODE_F11)
-                    SDL_SetWindowFullscreen(window,!(SDL_GetWindowFlags(window)&SDL_WINDOW_FULLSCREEN));
+                else if (event.key.scancode==SDL_SCANCODE_F11) {
+                    quality::display_mode.store((SDL_GetWindowFlags(window)&SDL_WINDOW_FULLSCREEN)?2u:1u);
+                    quality::display_revision.fetch_add(1,std::memory_order_release);
+                }
                 else keys.down.insert(event.key.scancode);
             } else if (event.type==SDL_EVENT_KEY_UP) keys.down.erase(event.key.scancode);
         }
         now=std::chrono::steady_clock::now();
+        const unsigned revision=quality::display_revision.load(std::memory_order_acquire);
+        if(revision!=display_revision) {
+            ApplyWindow(window); renderer->Resize(); display_revision=revision;
+        }
         if (!running || (seconds>0 && std::chrono::duration<double>(now-started).count()>=seconds)) break;
         if (const auto error=pgr::gldirect::Failure(); !error.empty()) {
             std::fprintf(stderr,"vulkan runtime: %s\n",error.c_str()); boot_failed=true; break;
@@ -221,7 +275,9 @@ int main(int argc, char** argv) {
             const auto tokens=InputTokens(keys,pad);
             if (!tokens.empty() || had_input) SendCommand(tokens);
             had_input=!tokens.empty();
-            next_input=now+std::chrono::milliseconds(65);
+            // 04D.3: polling at ~60 Hz reduces pause-menu input latency;
+            // it does not change guest game simulation/timestep.
+            next_input=now+std::chrono::milliseconds(16);
         }
         int w=0,h=0;
         SDL_GetWindowSizeInPixels(window,&w,&h);
@@ -252,7 +308,11 @@ int main(int argc, char** argv) {
             submissions<<next.frame<<','<<next.present<<','<<stats.presented<<','<<next.draw_ns/1e6<<','
                 <<next.queue_wait_ns/1e6<<','<<stats.execute_ms<<','<<stats.shader_ms<<','<<stats.fence_ms<<','
                 <<stats.acquire_ms<<','<<stats.present_ms<<','<<completed_gpu_ms<<','<<stats.gpu_frame<<','<<stats.accepted<<','
-                <<stats.rejected<<','<<stats.indexed<<','<<stats.nonindexed<<','<<stats.acquire_timeout<<','<<!render_ok<<','<<stats.cube_cache_creates<<','<<stats.cube_cache_hits<<','<<stats.cube_face_copies<<'\n';
+                <<stats.rejected<<','<<stats.indexed<<','<<stats.nonindexed<<','<<stats.acquire_timeout<<','<<!render_ok<<','<<stats.cube_cache_creates<<','<<stats.cube_cache_hits<<','<<stats.cube_face_copies<<','
+                <<stats.staging_allocations<<','<<stats.staging_reuses<<','<<stats.descriptor_creates<<','
+                <<stats.descriptor_resets<<','<<stats.framebuffer_hits<<','<<stats.framebuffer_creates<<','
+                <<stats.presented_fps<<','<<stats.presented_frame_ms<<','<<(1u<<quality::msaa_applied.load())<<','
+                <<quality::fxaa.load()<<','<<quality::render_percent.load()<<'\n';
             pending.draw_ns+=next.draw_ns; pending.decode_ns+=next.decode_ns;
             pending.texture_check_ns+=next.texture_check_ns; pending.assemble_ns+=next.assemble_ns;
             pending.max_draw_ns=std::max(pending.max_draw_ns,next.max_draw_ns);
@@ -261,6 +321,9 @@ int main(int argc, char** argv) {
             execute_ms+=stats.execute_ms; shader_ms+=stats.shader_ms; fence_ms+=stats.fence_ms;
             acquire_ms+=stats.acquire_ms; present_ms+=stats.present_ms; gpu_ms+=completed_gpu_ms;
             accepted+=stats.accepted; rejected+=stats.rejected; indexed+=stats.indexed; nonindexed+=stats.nonindexed;
+            staging_allocations+=stats.staging_allocations; staging_reuses+=stats.staging_reuses;
+            descriptor_creates+=stats.descriptor_creates; descriptor_resets+=stats.descriptor_resets;
+            framebuffer_hits+=stats.framebuffer_hits; framebuffer_creates+=stats.framebuffer_creates;
             cube_creates+=stats.cube_cache_creates; cube_hits+=stats.cube_cache_hits; cube_copies+=stats.cube_face_copies;
             if (next.present) {
                 const auto at=std::chrono::steady_clock::now();
@@ -270,11 +333,16 @@ int main(int argc, char** argv) {
                     <<pending.texture_check_ns/1e6<<','<<pending.assemble_ns/1e6<<','<<pending.queue_wait_ns/1e6<<','
                     <<execute_ms<<','<<shader_ms<<','<<fence_ms<<','<<acquire_ms<<','<<present_ms<<','<<gpu_ms<<','
                     <<pending.supported<<','<<pending.rejected_draws<<','<<accepted<<','<<rejected<<','<<indexed<<','
-                    <<nonindexed<<','<<stats.presented<<','<<stats.acquire_timeout<<','<<!render_ok<<','<<cube_creates<<','<<cube_hits<<','<<cube_copies<<'\n';
+                    <<nonindexed<<','<<stats.presented<<','<<stats.acquire_timeout<<','<<!render_ok<<','<<cube_creates<<','<<cube_hits<<','<<cube_copies<<','
+                    <<staging_allocations<<','<<staging_reuses<<','<<descriptor_creates<<','<<descriptor_resets<<','
+                    <<framebuffer_hits<<','<<framebuffer_creates<<','<<stats.presented_fps<<','<<stats.presented_frame_ms<<','
+                    <<(1u<<quality::msaa_applied.load())<<','<<quality::fxaa.load()<<','<<quality::render_percent.load()<<'\n';
                 if (stats.presented) ++total_frames;
                 last_frame=at; last_cpu=cpu; pending={};
                 execute_ms=shader_ms=fence_ms=acquire_ms=present_ms=gpu_ms=0;
                 accepted=rejected=indexed=nonindexed=0;
+                staging_allocations=staging_reuses=descriptor_creates=descriptor_resets=0;
+                framebuffer_hits=framebuffer_creates=0;
                 cube_creates=cube_hits=cube_copies=0;
             }
             if (!render_ok) { boot_failed=true; break; }
@@ -290,6 +358,10 @@ int main(int argc, char** argv) {
             if (fs::is_regular_file("snap")) {
                 if (!renderer->Capture("snap.ppm")) std::fputs("vulkan: requested snapshot failed\n",stderr);
                 std::error_code error; fs::remove("snap",error);
+            }
+            if(fs::is_regular_file("variants")) {
+                CaptureVariants(*renderer);
+                std::error_code error; fs::remove("variants",error);
             }
             char title[240];
             std::snprintf(title,sizeof(title),"PGR1 native Vulkan | guest %llu | presents %llu | draws %llu | rejected %llu",
@@ -311,6 +383,8 @@ int main(int argc, char** argv) {
     }
     if (const char* capture=std::getenv("PGR1_CAPTURE"); capture && !renderer->Capture(capture))
         std::fputs("vulkan: final capture failed\n",stderr);
+    if(const char* variants=std::getenv("PGR1_CAPTURE_VARIANTS");variants && *variants=='1')
+        CaptureVariants(*renderer);
     const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
     std::printf("PGR1 NATIVE Vulkan game: guest_frame=%llu presented=%llu accepted=%llu rejected=%llu elapsed_s=%.3f\n",
         static_cast<unsigned long long>(last_guest_frame),static_cast<unsigned long long>(total_frames),

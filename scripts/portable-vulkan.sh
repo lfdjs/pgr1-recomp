@@ -41,7 +41,13 @@ run_game() {
   region >/dev/null
   digest="$(sha1sum assets/default.xbe | cut -d' ' -f1)"
   [[ ! -f "$OUT/game-xbe.sha1" ]] || recorded="$(cat "$OUT/game-xbe.sha1")"
-  [[ -x "$OUT/pgr1_vk_game" && "$digest" == "$recorded" ]] || build_game
+  if [[ -x "$OUT/pgr1_vk_game" && "$digest" == "$recorded" ]]; then
+    # Source/shader/CMake changes must not run a stale binary simply because
+    # default.xbe is unchanged. Ninja/Make performs an incremental build.
+    cmake --build "$OUT" --parallel "${JOBS:-4}" --target pgr1_vk_game
+  else
+    build_game
+  fi
   mkdir -p "$RUN/logs"
   RUN="$(realpath "$RUN")"
   (
@@ -49,7 +55,13 @@ run_game() {
     cd "$RUN"
     echo 'Backend: native Vulkan (SDK NV2A -> HLSL -> SPIR-V, real recompiled PGR1)'
     echo "Run directory: $RUN"
-    FPS="${PGR1_FPS:-60}" "$OUT/pgr1_vk_game" "$ROOT/assets"
+    # Leave the saved menu cap effective unless an explicit diagnostic override
+    # is requested. FPS itself is also accepted for existing harness workflows.
+    if [[ -n "${PGR1_FPS+x}" ]]; then
+      FPS="$PGR1_FPS" "$OUT/pgr1_vk_game" "$ROOT/assets"
+    else
+      "$OUT/pgr1_vk_game" "$ROOT/assets"
+    fi
   ) 9>"$RUN/run.lock" 2>&1 | tee "$RUN/console.log"
 }
 

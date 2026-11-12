@@ -1,11 +1,14 @@
 // Synthetic SDK shader/command integration tests. This is not game evidence.
 #include "game_renderer.h"
+#include "quality_state.h"
 #include "../gldirect/commands.h"
 #include "../gldirect/draw_constants.h"
 #include "../gldirect/shader_compiler.h"
 #include "gpu/shaders.h"
 #include "app/app.h"
 #include <array>
+#include <algorithm>
+#include <vulkan/vulkan.h>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -318,6 +321,140 @@ int main() {
     auto nv_draw=Quad(state,nv_pair,{0,1,0,1});
     for(auto& v:nv_draw.vertices) v.attributes[0][2]=.5f*state.zscale;
     pixels=Execute(renderer,{Clear(),nv_draw});Pixel(pixels,16,16,0xff00ff00);
+
+    // 04D.2: after one submission is retired, mapped stage memory, descriptors
+    // and live-target framebuffer must be reused without changing pixels.
+    auto stable_draw=red;
+    pixels=Execute(renderer,{Clear(),stable_draw});Pixel(pixels,16,16,0xffff0000);
+    pixels=Execute(renderer,{Clear(),stable_draw});Pixel(pixels,16,16,0xffff0000);
+    assert(renderer.LastStats().staging_reuses>=1);
+    assert(renderer.LastStats().staging_allocations==0);
+    assert(renderer.LastStats().descriptor_resets>=1);
+    assert(renderer.LastStats().descriptor_creates==0);
+    assert(renderer.LastStats().framebuffer_hits>=1);
+    assert(renderer.LastStats().framebuffer_creates==0);
+
+    // MSAA must alter actual diagonal coverage in the primary display target;
+    // small reflection/auxiliary targets above remain single-sampled.
+    const Target display{0x10000,0x20000,640,480};
+    auto display_state=State();display_state.viewport={0,0,640,480,0,1};
+    auto display_shaders=Shaders(display_state);
+    auto display_draw=Quad(display_state,display_shaders,{1,1,1,1});
+    display_draw.target=display;display_draw.pipeline.viewport={0,0,640,480};
+    display_draw.pipeline.depth=true;display_draw.pipeline.depth_write=true;
+    display_draw.pipeline.depth_func=0x201;
+    for(auto& v:display_draw.vertices) {
+        v.attributes[0][0]=v.position[0]=(v.position[0]+.5f)*20-.5f;
+        v.attributes[0][1]=v.position[1]=(v.position[1]+.5f)*15-.5f;
+    }
+    const auto display_constants=Constants(display_state,640,480,false);
+    std::memcpy(display_draw.draw_constants.data(),&display_constants,sizeof(display_constants));
+    display_draw.indices={0,1,3};
+    auto display_clear=Clear();display_clear.target=display;
+    display_clear.rects={{0,0,640,480}};display_clear.stencil=7;
+    const auto fractional=[](const auto& image) {
+        return std::count_if(image.begin(),image.end(),[](uint32_t p){return (p&255)>0 && (p&255)<255;});
+    };
+    std::vector<uint32_t> display_off;
+    for(unsigned option=0;option<=2;option++) {
+        if(!(pgr::vulkan::quality::msaa_supported_mask.load()&(1u<<option)))continue;
+        pgr::vulkan::quality::msaa.store(option);
+        pixels=Execute(renderer,{display_clear,display_draw},display);
+        assert(pgr::vulkan::quality::msaa_applied.load()==option);
+        const auto count=fractional(pixels);
+        std::printf("Real MSAA %ux coverage: %zu fractional pixels\n",1u<<option,size_t(count));
+        if(!option) { assert(count==0);display_off=pixels; }
+        else { assert(count>100);assert(pixels!=display_off); }
+        auto visible_display=display_draw;visible_display.indices={0,1,2,0,2,3};
+        visible_display.visibility=std::make_shared<std::promise<uint64_t>>();
+        auto display_count=visible_display.visibility->get_future();
+        (void)Execute(renderer,{display_clear,visible_display},display);
+        assert(display_count.get()==640u*480u); // MSAA must not multiply guest visibility
+        pixels=Execute(renderer,{display_clear,display_draw},display);
+        // Resolved depth/stencil remains available in the Xbox readback ABI.
+        const auto z=Execute(renderer,{},display,true);
+        assert((z[20*640+20]&255)==7);
+        assert(std::abs(int(z[20*640+20]>>8)-8388608)<=1);
+        // Retained multipass geometry must preserve depth, even without a clear.
+        auto covered=display_draw;
+        for(auto& v:covered.vertices) { v.attributes[0][2]=v.position[2]=.8f;v.attributes[3]={1,0,0,1}; }
+        const auto retained=Execute(renderer,{covered},display);
+        assert(retained[20*640+20]==pixels[20*640+20]);
+    }
+    // The actual PGR1 scene clear also uses flags0x03: depth+stencil only.
+    // MSAA can change here by seeding retained color before the new depth clear.
+    if(pgr::vulkan::quality::msaa_supported_mask.load()&2u) {
+        pgr::vulkan::quality::msaa.store(0);
+        auto preserved=Execute(renderer,{display_clear,display_draw},display);
+        pgr::vulkan::quality::msaa.store(1);
+        auto depth_only=display_clear;depth_only.flags=3;
+        pixels=Execute(renderer,{depth_only},display);
+        assert(pixels==preserved && pgr::vulkan::quality::msaa_applied.load()==1);
+        const auto z=Execute(renderer,{},display,true);
+        assert((z[20*640+20]&255)==7 && (z[20*640+20]>>8)==0xffffff);
+    }
+    // A new surface can already be multisampled when the title clears only
+    // color+depth (retained stencil need not be cleared). Report its actual
+    // presented samples rather than falsely displaying Off until an f3 clear.
+    if(pgr::vulkan::quality::msaa_supported_mask.load()&2u) {
+        auto initial_clear=display_clear;initial_clear.target.color+=0x100;initial_clear.target.depth+=0x100;
+        initial_clear.flags=0xf1;
+        auto initial_draw=display_draw;initial_draw.target=initial_clear.target;
+        pgr::vulkan::quality::msaa.store(1);pgr::vulkan::quality::msaa_applied.store(0);
+        (void)Execute(renderer,{initial_clear,initial_draw},initial_clear.target);
+        Submission first_display;first_display.present=true;first_display.front=initial_clear.target.color;
+        assert(renderer.Render(first_display));
+        assert(pgr::vulkan::quality::msaa_applied.load()==1);
+    }
+    // A full title clear safely changes samples back to off at run time.
+    pgr::vulkan::quality::msaa.store(0);
+    pixels=Execute(renderer,{display_clear,display_draw},display);
+    assert(pixels==display_off && pgr::vulkan::quality::msaa_applied.load()==0);
+
+    // FXAA and sharpening use the same GPU pass as WSI presentation. ReadDisplay
+    // runs it without a swapchain so the exact source frame is comparable.
+    Submission display_submission;display_submission.present=true;display_submission.front=display.color;
+    assert(renderer.Render(display_submission));
+    assert(!renderer.LastStats().presented); // offscreen work is never FPS
+    pgr::vulkan::quality::fxaa.store(false);pgr::vulkan::quality::show_fps.store(false);
+    auto unfiltered=renderer.ReadDisplay();
+    assert(unfiltered.width==640 && unfiltered.height==480);
+    pgr::vulkan::quality::fxaa.store(true);
+    auto filtered=renderer.ReadDisplay();
+    assert(filtered.pixels!=unfiltered.pixels && fractional(filtered.pixels)>fractional(unfiltered.pixels));
+    pgr::vulkan::quality::sharpen_percent.store(100);
+    auto sharpened=renderer.ReadDisplay();assert(sharpened.pixels!=filtered.pixels);
+    pgr::vulkan::quality::sharpen_percent.store(0);
+    pgr::vulkan::quality::fxaa.store(false);
+    assert(renderer.ReadDisplay().pixels==unfiltered.pixels); // live toggle reverses
+    pgr::vulkan::quality::show_fps.store(true);
+    assert(renderer.ReadDisplay().pixels!=unfiltered.pixels); // actual overlay pixels
+    pgr::vulkan::quality::show_fps.store(false);
+    assert(renderer.ReadDisplay().pixels==unfiltered.pixels);
+
+    // CopyRects updates resolved color. Before a later multisampled draw it is
+    // seeded on the GPU, preserving all untouched pixels, not stale MSAA texels.
+    const auto support=pgr::vulkan::quality::msaa_supported_mask.load();
+    if(support&(VK_SAMPLE_COUNT_2_BIT|VK_SAMPLE_COUNT_4_BIT)) {
+        const unsigned option=support&VK_SAMPLE_COUNT_2_BIT?1u:2u;
+        pgr::vulkan::quality::msaa.store(option);
+        pixels=Execute(renderer,{display_clear,display_draw},display);
+        auto src=Clear(0xff0000ff);
+        Command transfer;transfer.kind=Command::Kind::Copy;transfer.source=target.color;transfer.target=display;
+        transfer.rects={{0,0,32,32}};transfer.destination_rects={{0,0,640,480}};
+        auto corner=display_draw;corner.pipeline.scissors={{0,0,8,8}};
+        corner.pipeline.depth=false;corner.pipeline.depth_write=false;
+        pixels=Execute(renderer,{src,transfer,corner},display);
+        assert(pixels[100*640+100]==0xff0000ff && pixels[2*640+2]==0xffffffff);
+        pgr::vulkan::quality::alpha_coverage.store(true);
+        auto alpha=display_draw;alpha.pipeline.depth=false;alpha.pipeline.depth_write=false;
+        for(auto& v:alpha.vertices)v.attributes[3][3]=.5f;
+        pixels=Execute(renderer,{display_clear,alpha},display);
+        assert((pixels[20*640+20]&255)>0 && (pixels[20*640+20]&255)<255);
+        pgr::vulkan::quality::alpha_coverage.store(false);
+        pgr::vulkan::quality::msaa.store(0);
+        pixels=Execute(renderer,{display_clear},display);
+    }
 
     // Invalid geometry must be rejected and counted, never submitted to Vulkan.
     auto invalid=red;invalid.indices={0,1,500};

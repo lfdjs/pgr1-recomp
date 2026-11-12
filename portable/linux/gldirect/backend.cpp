@@ -7,6 +7,8 @@
 #include <memory>
 #include <set>
 #include <map>
+#include <unordered_map>
+#include <unordered_set>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -91,9 +93,9 @@ class GLBackend final : public Backend {
 #endif
     }
     std::set<const char*> warned_;
-    std::set<uint32_t> gpu_written_, unread_;
+    std::unordered_set<uint32_t> gpu_written_, unread_;
     std::map<uint32_t,std::pair<TextureDesc,Target>> targets_;
-    std::map<uint32_t,uint64_t> gpu_epoch_;
+    std::unordered_map<uint32_t,uint64_t> gpu_epoch_;
     struct LateRead { TextureDesc desc; std::future<std::vector<uint32_t>> future; };
     std::map<uint32_t,LateRead> late_;
     static void WritePixels(uint32_t address,const TextureDesc& desc,const std::vector<uint32_t>& pixels) {
@@ -128,7 +130,7 @@ class GLBackend final : public Backend {
         std::vector<uint8_t> guest;
         uint64_t used=0;
     };
-    std::map<uint32_t,CachedPixels> textures_;
+    std::unordered_map<uint32_t,CachedPixels> textures_;
     uint64_t texture_clock_=0;
 
     void Unsupported(const char* reason) {

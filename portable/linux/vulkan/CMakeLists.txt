@@ -35,6 +35,19 @@ foreach(stage IN ITEMS vert frag)
   list(APPEND PGR1_SHADER_BINARIES "${binary}")
 endforeach()
 add_custom_target(pgr1_vk_shaders DEPENDS ${PGR1_SHADER_BINARIES})
+# 04D.4 fullscreen FXAA/sharpen pass (compiled for Vulkan 1.0).
+set(PGR1_POSTFX_BINARY_DIR "${CMAKE_BINARY_DIR}/vk_shaders")
+foreach(stage IN ITEMS vert frag)
+  set(src "${CMAKE_CURRENT_SOURCE_DIR}/shaders/postfx.${stage}")
+  set(dst "${PGR1_POSTFX_BINARY_DIR}/postfx.${stage}.spv")
+  add_custom_command(OUTPUT "${dst}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${PGR1_POSTFX_BINARY_DIR}"
+    COMMAND "${PGR1_VK_GLSLANG}" -V -S "${stage}" "${src}" -o "${dst}"
+    DEPENDS "${src}" VERBATIM)
+  list(APPEND PGR1_POSTFX_SPIRV "${dst}")
+endforeach()
+add_custom_target(pgr1_vk_postfx_shaders DEPENDS ${PGR1_POSTFX_SPIRV})
+
 add_executable(pgr1_vk_wsi vk_wsi.cpp vk_geometry.cpp vk_guest_frame.cpp vk_command_bridge.cpp)
 add_dependencies(pgr1_vk_wsi pgr1_vk_shaders)
 target_link_libraries(pgr1_vk_wsi PRIVATE SDL3::SDL3 Vulkan::Vulkan)
@@ -61,6 +74,12 @@ if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/xdk/dsound.cpp")
 endif()
 
 if(BUILD_TESTING)
+  add_executable(pgr1_vk_present_counter_test test_present_counter.cpp)
+  target_compile_options(pgr1_vk_present_counter_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME vk_presented_frame_counter COMMAND pgr1_vk_present_counter_test)
+  if(Python3_EXECUTABLE)
+    add_test(NAME vk_presentation_report COMMAND "${Python3_EXECUTABLE}" -B "${PGR1_ROOT}/portable/tests/frame_report_tests.py")
+  endif()
   add_executable(pgr1_vk_guest_frame_test test_vk_guest_frame.cpp vk_guest_frame.cpp)
   target_compile_options(pgr1_vk_guest_frame_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
   add_test(NAME vk_guest_geometry_model COMMAND pgr1_vk_guest_frame_test)
@@ -83,7 +102,15 @@ if(BUILD_TESTING)
     target_link_options(pgr1_audio_mixer_test PRIVATE -Wl,--gc-sections)
     target_link_libraries(pgr1_audio_mixer_test PRIVATE Threads::Threads)
     add_test(NAME audio_production_mixer COMMAND pgr1_audio_mixer_test)
-    add_executable(pgr1_vk_renderer_test test_game_renderer.cpp game_renderer.cpp
+    add_executable(pgr1_linux_settings_test ../gldirect/test_linux_settings.cpp ../gldirect/app_linux.cpp)
+    target_include_directories(pgr1_linux_settings_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect/tests"
+      "${PGR1_ROOT}/src" "${PGR1_SDK_SOURCE_DIR}/runtime" "${PGR1_SDK_SOURCE_DIR}/harness")
+    target_compile_definitions(pgr1_linux_settings_test PRIVATE PGR1_NATIVE_VULKAN=1)
+    target_compile_options(pgr1_linux_settings_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+    target_link_options(pgr1_linux_settings_test PRIVATE -Wl,--gc-sections)
+    target_link_libraries(pgr1_linux_settings_test PRIVATE Threads::Threads)
+    add_test(NAME linux_settings_persistence COMMAND pgr1_linux_settings_test)
+    add_executable(pgr1_vk_renderer_test test_game_renderer.cpp game_renderer.cpp vk_postfx.cpp vk_fps_overlay.cpp
       ../gldirect/commands.cpp ../gldirect/shader_compiler.cpp ../gldirect/draw_constants.cpp
       "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/shaders.cpp")
     target_include_directories(pgr1_vk_renderer_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect"
@@ -93,6 +120,10 @@ if(BUILD_TESTING)
     target_compile_options(pgr1_vk_renderer_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
     target_link_options(pgr1_vk_renderer_test PRIVATE -Wl,--gc-sections)
     target_link_libraries(pgr1_vk_renderer_test PRIVATE Threads::Threads SDL3::SDL3 Vulkan::Vulkan)
+    target_compile_definitions(pgr1_vk_renderer_test PRIVATE
+      "PGR1_VK_POSTFX_VERT_SPV=\"${PGR1_POSTFX_BINARY_DIR}/postfx.vert.spv\""
+      "PGR1_VK_POSTFX_FRAG_SPV=\"${PGR1_POSTFX_BINARY_DIR}/postfx.frag.spv\"")
+    add_dependencies(pgr1_vk_renderer_test pgr1_vk_postfx_shaders)
     add_test(NAME vk_sdk_offscreen_pixels COMMAND pgr1_vk_renderer_test)
     set_tests_properties(vk_sdk_offscreen_pixels PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
 
@@ -141,16 +172,21 @@ if(PGR1_VK_BUILD_GAME)
   add_library(pgr1_vk_generated OBJECT ${generated_sources})
   target_include_directories(pgr1_vk_generated PRIVATE "${PGR1_SDK_SOURCE_DIR}/runtime" "${PGR1_GENERATED_DIR}")
   target_compile_options(pgr1_vk_generated PRIVATE -O1 -g0 -w -fno-strict-aliasing -march=x86-64-v2)
-  add_executable(pgr1_vk_game main.cpp backend.cpp game_renderer.cpp
+  add_executable(pgr1_vk_game main.cpp backend.cpp game_renderer.cpp vk_postfx.cpp vk_fps_overlay.cpp
     ../gldirect/app_linux.cpp ../gldirect/commands.cpp ../gldirect/shader_compiler.cpp
     ../gldirect/draw_constants.cpp ../gldirect/sdl_audio.cpp
     ${runtime_sources} ${harness_sources} ${game_sources} $<TARGET_OBJECTS:pgr1_vk_generated>)
   target_include_directories(pgr1_vk_game PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect"
-    "${PGR1_ROOT}/src" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/audio" "${PGR1_SDK_SOURCE_DIR}/runtime" "${PGR1_SDK_SOURCE_DIR}/harness"
+    "${PGR1_ROOT}/src" "${CMAKE_CURRENT_SOURCE_DIR}" "${PGR1_SDK_SOURCE_DIR}/runtime" "${PGR1_SDK_SOURCE_DIR}/harness"
     "${PGR1_SDK_SOURCE_DIR}/harness/compat" "${PGR1_GENERATED_DIR}")
   target_compile_definitions(pgr1_vk_game PRIVATE PGR1_RELEASE=${PGR1_RELEASE}
     XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=0 PGR1_NATIVE_VULKAN=1 PGR1_ENABLE_REFERENCE_COMPARE=1
     "PGR1_GLSLANG_EXECUTABLE=\"${PGR1_VK_GLSLANG}\"")
   target_compile_options(pgr1_vk_game PRIVATE -fno-strict-aliasing -march=x86-64-v2)
   target_link_libraries(pgr1_vk_game PRIVATE Threads::Threads SDL3::SDL3 Vulkan::Vulkan)
+  target_include_directories(pgr1_vk_game PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/audio")
+  target_compile_definitions(pgr1_vk_game PRIVATE
+    "PGR1_VK_POSTFX_VERT_SPV=\"${PGR1_POSTFX_BINARY_DIR}/postfx.vert.spv\""
+    "PGR1_VK_POSTFX_FRAG_SPV=\"${PGR1_POSTFX_BINARY_DIR}/postfx.frag.spv\"")
+  add_dependencies(pgr1_vk_game pgr1_vk_postfx_shaders)
 endif()

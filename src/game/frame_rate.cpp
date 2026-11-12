@@ -20,6 +20,9 @@
 #include "common/release.h"
 #include "core/log.h"
 #include "kernel/kernel.h"
+#ifdef PGR1_NATIVE_VULKAN
+#include "../../portable/linux/vulkan/quality_state.h"
+#endif
 
 namespace pgr1 {
 extern uint32_t frame_rate;
@@ -43,6 +46,9 @@ uint32_t Hz() {
             if (s.fps_cap && s.fps_cap < v) {
                 LOGR("pgr1: the frame rate cap raised from %u to %u", s.fps_cap, v);
                 s.fps_cap = v;
+#ifdef PGR1_NATIVE_VULKAN
+                pgr::vulkan::quality::fps_cap.store(v,std::memory_order_relaxed);
+#endif
             }
         }
         return v;
