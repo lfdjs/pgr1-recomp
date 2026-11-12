@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report actual submitted game frames. Reject empty/reference-incomplete FPS claims."""
+"""Report successful presentations when recorded; state assumptions for legacy CSVs."""
 import argparse
 import csv
 import math
@@ -71,17 +71,63 @@ def main():
         return
     if not rows:
         raise SystemExit("No submitted game frames; benchmark unavailable")
-    # A file may be observed while a process is still writing, but zero/NaN
-    # intervals cannot be used as evidence of a presentation rate.
-    intervals = [float(r['frame_ms']) for r in rows]
-    if any(not math.isfinite(t) or t <= 0 for t in intervals):
-        raise SystemExit("Nonpositive or nonfinite frame interval; timing data is incomplete")
+    # Modern runtime CSVs include unsuccessful acquire/present attempts. Those
+    # rows and offscreen work must never count as displayed frames. Prefer the
+    # monotonic successful-present counter's intervals: frame_ms measures the
+    # time between title present requests, which may have failed in between.
+    requested_rows = rows
+    has_status = "presented" in rows[0]
+    direct_intervals = "presented_frame_ms" in rows[0]
+    if has_status:
+        try:
+            rows = [r for r in rows if int(r["presented"]) == 1]
+        except (TypeError, ValueError) as error:
+            raise SystemExit("Invalid presentation status; timing data is incomplete") from error
+        if not rows:
+            raise SystemExit("No successful presented game frames; benchmark unavailable")
+        print(f"Successful presentations={len(rows)}/{len(requested_rows)} logged rows; "
+              f"excluded unsuccessful/offscreen rows={len(requested_rows)-len(rows)}")
+    else:
+        print("Legacy CSV: no presentation status; rates assume each logged frame was presented.")
+    try:
+        if direct_intervals:
+            measured = [float(r["presented_frame_ms"]) for r in rows]
+            if any(not math.isfinite(t) or t < 0 for t in measured):
+                raise ValueError("invalid successful-present interval")
+            # The first successful present establishes the clock and has no
+            # previous successful presentation to measure; it reports zero.
+            intervals = [t for t in measured if t > 0]
+            print(f"Interval source=successful-present counter; measured intervals={len(intervals)}; "
+                  f"uninitialized intervals omitted={len(measured)-len(intervals)}")
+        elif has_status:
+            # Older native CSVs have status but no direct counter. Account for
+            # time spent in failed attempts between successful presentations.
+            intervals = []
+            elapsed = 0.0
+            for row in requested_rows:
+                interval = float(row["frame_ms"])
+                if not math.isfinite(interval) or interval < 0:
+                    raise ValueError("invalid logged frame interval")
+                elapsed += interval
+                if int(row["presented"]) == 1:
+                    if elapsed > 0:
+                        intervals.append(elapsed)
+                    elapsed = 0.0
+            print("Interval source=accumulated logged intervals between successful presentations")
+        else:
+            intervals = [float(r["frame_ms"]) for r in rows]
+            if any(not math.isfinite(t) or t <= 0 for t in intervals):
+                raise ValueError("invalid legacy frame interval")
+    except (KeyError, TypeError, ValueError) as error:
+        raise SystemExit("Nonpositive or nonfinite frame interval; timing data is incomplete") from error
+    if not intervals:
+        raise SystemExit("No measured positive presentation intervals; benchmark unavailable")
     print(f"Selected frame range={rows[0]['frame']}..{rows[-1]['frame']} "
           "(scene selection requires visual confirmation)")
     stats("End-to-end frame", intervals)
     pacing(intervals, args.target_fps)
     for key in ("cpu_ms", "capture_ms", "max_draw_ms", "texture_check_ms", "assemble_ms",
-                "decode_ms", "queue_wait_ms", "execute_ms", "present_ms"):
+                "decode_ms", "queue_wait_ms", "execute_ms", "fence_ms", "acquire_ms", "present_ms"):
         stats(key, [float(r[key]) for r in rows if key in r])
     supported = sum(int(r['supported_draws']) for r in rows)
     rejected = sum(int(r['rejected_draws']) for r in rows)
@@ -102,7 +148,7 @@ def main():
         print('Incomplete rendering: these timings do not establish playable-game FPS.')
     else:
         elapsed = sum(intervals) / 1000
-        print(f'Mean presentation rate={len(rows)/elapsed:.2f} frames/s; scene correctness still requires visual review.')
+        print(f'Mean presentation rate={len(intervals)/elapsed:.2f} frames/s; scene correctness still requires visual review.')
 
 
 if __name__ == '__main__':

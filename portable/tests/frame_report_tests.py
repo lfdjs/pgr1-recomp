@@ -44,6 +44,7 @@ class FrameReportTests(unittest.TestCase):
         self.assertIn("over budget+1 ms=1/2 (50.0%)", result.stdout)
         self.assertIn("1% low presentation rate=50.00", result.stdout)
         self.assertIn("Mean presentation rate=55.56", result.stdout)
+        self.assertIn("Legacy CSV: no presentation status", result.stdout)
 
     def test_jitter_tolerance_is_separate_from_exact_budget(self):
         self.write("frames.csv", ["frame", "frame_ms", "supported_draws", "rejected_draws"],
@@ -70,6 +71,47 @@ class FrameReportTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("No submitted game frames", result.stderr)
         self.assertNotIn("presentation rate", result.stdout)
+
+    def test_only_successful_present_counter_intervals_determine_fps(self):
+        self.write("frames.csv", ["frame", "frame_ms", "present_requested", "presented",
+                                  "presented_frame_ms", "supported_draws", "rejected_draws",
+                                  "fence_ms", "acquire_ms"],
+                   [[1, 0.1, 1, 1, 0, 10, 0, 1, 2],   # initializes counter
+                    [2, 0.1, 1, 0, 0, 1000, 99, 900, 900],  # failed acquire
+                    [3, 0.1, 0, 0, 0, 1000, 99, 900, 900],  # offscreen draw
+                    [4, 0.1, 0, 0, 0, 0, 0, 900, 900],  # simulation tick
+                    [5, 1, 1, 1, 40, 10, 0, 3, 4],
+                    [6, 1, 1, 1, 60, 10, 0, 5, 6]])
+        result = self.run_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Successful presentations=3/6", result.stdout)
+        self.assertIn("excluded unsuccessful/offscreen rows=3", result.stdout)
+        self.assertIn("measured intervals=2; uninitialized intervals omitted=1", result.stdout)
+        self.assertIn("End-to-end frame: mean=50.000 ms", result.stdout)
+        self.assertIn("Mean presentation rate=20.00", result.stdout)
+        self.assertIn("Frames=3 supported Draws=30 rejected Draws=0", result.stdout)
+        self.assertIn("fence_ms: mean=3.000 ms", result.stdout)
+        self.assertIn("acquire_ms: mean=4.000 ms", result.stdout)
+
+    def test_older_status_csv_accumulates_time_in_failed_attempts(self):
+        self.write("frames.csv", ["frame", "frame_ms", "presented", "supported_draws", "rejected_draws"],
+                   [[1, 10, 1, 10, 0], [2, 30, 0, 10, 0], [3, 10, 1, 10, 0]])
+        result = self.run_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("End-to-end frame: mean=25.000 ms", result.stdout)
+        self.assertIn("Mean presentation rate=40.00", result.stdout)
+        self.assertIn("Interval source=accumulated logged intervals", result.stdout)
+
+    def test_failed_presentations_and_initial_zero_cannot_claim_fps(self):
+        columns = ["frame", "frame_ms", "presented", "presented_frame_ms", "supported_draws", "rejected_draws"]
+        for rows, message in [([[1, 1, 0, 1, 10, 0]], "No successful presented"),
+                              ([[1, 1, 1, 0, 10, 0]], "No measured positive presentation intervals")]:
+            with self.subTest(rows=rows):
+                self.write("frames.csv", columns, rows)
+                result = self.run_report()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn("Mean presentation rate", result.stdout)
 
     def test_reference_uses_capture_frame_range(self):
         self.write("pgr1_perf.csv", ["capture_frame", "reference_draw_ms", "reference_clear_ms", "decode_ms", "ipc_ms"],

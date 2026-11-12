@@ -1,0 +1,18 @@
+# Native Vulkan validation: saved Player profile, Quick Race, Easy, San Francisco,
+# MINI Cooper S and automatic transmission. Requires PGR1_SKIP_INTRO=1 and a
+# profile on the isolated emulated HDD. Verified with the USA XBE. Inspect a
+# capture: a different saved menu selection can change this route.
+180 START 1
+360 A 1
+540 A 1
+720 A 1
+900 UP 1
+1080 A 1
+1260 A 1
+1440 A 1
+1620 A 1
+1800 A 1
+1980 A 1
+2160 A 1
+2340 A 1
+2520 RT 9000

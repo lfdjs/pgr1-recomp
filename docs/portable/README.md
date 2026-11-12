@@ -9,6 +9,10 @@ recompiled game to owned command submissions and SDK-generated SPIR-V. Its
 validation limits are documented independently from the 04B geometry fixture
 and the OpenGL/Zink race validation.
 
+The [audio, RECOMP settings and Vulkan antialiasing report](08-audio-recomp-vulkan.md)
+documents positional engine submixes, MSAA/FXAA, the FPS overlay, Linux preferences
+and the hardware validation still pending.
+
 The milestone 00 scaffold description below is historical.
 
 ## Current baseline
