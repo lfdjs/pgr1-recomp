@@ -41,6 +41,25 @@ target_link_libraries(pgr1_vk_wsi PRIVATE SDL3::SDL3 Vulkan::Vulkan)
 target_compile_definitions(pgr1_vk_wsi PRIVATE "PGR1_VK_SHADER_DIR=\"${PGR1_VK_SHADER_OUTPUT}\"")
 target_compile_options(pgr1_vk_wsi PRIVATE -Wall -Wextra -Wpedantic)
 include(CTest)
+set(PGR1_SDK_SOURCE_DIR "${PGR1_ROOT}/sdk" CACHE PATH "Compatible, pinned XboxXBERecomp SDK checkout")
+if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/xdk/dsound.cpp")
+  # Generate an overlay of the pinned SDK mixer in the BUILD tree, not sdk/.
+  # The Xbox call IDirectSound_SetRolloffFactor was previously a no-op.
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  set(PGR1_VK_DSOUND_OVERLAY "${CMAKE_BINARY_DIR}/pgr1_vk_dsound.cpp")
+  execute_process(COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/audio/build_dsound_overlay_04d5.py"
+      "${PGR1_SDK_SOURCE_DIR}/runtime/xdk/dsound.cpp" "${PGR1_VK_DSOUND_OVERLAY}"
+    RESULT_VARIABLE PGR1_VK_DSOUND_STATUS)
+  if(NOT PGR1_VK_DSOUND_STATUS EQUAL 0)
+    message(FATAL_ERROR "Vulkan audio mixer overlay incompatible with pinned SDK")
+  endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/audio/build_dsound_overlay.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/audio/build_dsound_overlay_04d5.py"
+    "${PGR1_SDK_SOURCE_DIR}/runtime/xdk/dsound.cpp")
+endif()
+
 if(BUILD_TESTING)
   add_executable(pgr1_vk_guest_frame_test test_vk_guest_frame.cpp vk_guest_frame.cpp)
   target_compile_options(pgr1_vk_guest_frame_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
@@ -51,6 +70,19 @@ if(BUILD_TESTING)
   set(PGR1_SDK_SOURCE_DIR "${PGR1_ROOT}/sdk" CACHE PATH "Compatible, pinned XboxXBERecomp SDK checkout")
   if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/shaders.cpp")
     find_package(Threads REQUIRED)
+    execute_process(COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/audio/write_test_symbols.py" "${PGR1_VK_DSOUND_OVERLAY}"
+      "${CMAKE_BINARY_DIR}/audio-test-symbols/image_symbols.h" COMMAND_ERROR_IS_FATAL ANY)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/audio/write_test_symbols.py")
+    add_executable(pgr1_audio_mixer_test audio/test_audio_mixer.cpp)
+    target_include_directories(pgr1_audio_mixer_test PRIVATE "${CMAKE_BINARY_DIR}/audio-test-symbols" "${CMAKE_CURRENT_SOURCE_DIR}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/audio" "${PGR1_SDK_SOURCE_DIR}/runtime"
+      "${PGR1_SDK_SOURCE_DIR}/harness" "${PGR1_SDK_SOURCE_DIR}/harness/compat")
+    target_compile_definitions(pgr1_audio_mixer_test PRIVATE "PGR1_DSOUND_OVERLAY=\"${PGR1_VK_DSOUND_OVERLAY}\"")
+    target_compile_options(pgr1_audio_mixer_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+    target_link_options(pgr1_audio_mixer_test PRIVATE -Wl,--gc-sections)
+    target_link_libraries(pgr1_audio_mixer_test PRIVATE Threads::Threads)
+    add_test(NAME audio_production_mixer COMMAND pgr1_audio_mixer_test)
     add_executable(pgr1_vk_renderer_test test_game_renderer.cpp game_renderer.cpp
       ../gldirect/commands.cpp ../gldirect/shader_compiler.cpp ../gldirect/draw_constants.cpp
       "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/shaders.cpp")
@@ -100,6 +132,8 @@ if(PGR1_VK_BUILD_GAME)
   find_package(Threads REQUIRED)
   file(GLOB runtime_sources CONFIGURE_DEPENDS "${PGR1_SDK_SOURCE_DIR}/runtime/*/*.cpp")
   list(FILTER runtime_sources EXCLUDE REGEX "/runtime/app/|/core/input.cpp$|/core/wheel.cpp$|/gpu/d3d12.cpp$|/gpu/d3d11.cpp$|/gpu/d3d_common.cpp$|/audio/xaudio2.cpp$")
+  list(FILTER runtime_sources EXCLUDE REGEX "/runtime/xdk/dsound[.]cpp$")
+  list(APPEND runtime_sources "${PGR1_VK_DSOUND_OVERLAY}")
   file(GLOB harness_sources CONFIGURE_DEPENDS "${PGR1_SDK_SOURCE_DIR}/harness/*.cpp")
   list(FILTER harness_sources EXCLUDE REGEX "/main_test.cpp$|/null_backend.cpp$|/null_audio.cpp$|/app_headless.cpp$")
   file(GLOB game_sources CONFIGURE_DEPENDS "${PGR1_ROOT}/src/common/*.cpp" "${PGR1_ROOT}/src/game/*.cpp")
@@ -112,7 +146,7 @@ if(PGR1_VK_BUILD_GAME)
     ../gldirect/draw_constants.cpp ../gldirect/sdl_audio.cpp
     ${runtime_sources} ${harness_sources} ${game_sources} $<TARGET_OBJECTS:pgr1_vk_generated>)
   target_include_directories(pgr1_vk_game PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect"
-    "${PGR1_ROOT}/src" "${PGR1_SDK_SOURCE_DIR}/runtime" "${PGR1_SDK_SOURCE_DIR}/harness"
+    "${PGR1_ROOT}/src" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/audio" "${PGR1_SDK_SOURCE_DIR}/runtime" "${PGR1_SDK_SOURCE_DIR}/harness"
     "${PGR1_SDK_SOURCE_DIR}/harness/compat" "${PGR1_GENERATED_DIR}")
   target_compile_definitions(pgr1_vk_game PRIVATE PGR1_RELEASE=${PGR1_RELEASE}
     XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=0 PGR1_NATIVE_VULKAN=1 PGR1_ENABLE_REFERENCE_COMPARE=1
