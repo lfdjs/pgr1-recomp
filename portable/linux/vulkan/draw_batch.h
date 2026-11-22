@@ -1,6 +1,8 @@
 #pragma once
-// 04D.6: group only consecutive draws that cannot read a GPU-written target.
-// Resource uploads and descriptor writes are performed before opening the group.
+// EN (04D.6): Group only consecutive draws that cannot read a GPU-written target.
+// PT-BR (04D.6): Agrupe apenas draws consecutivos sem leitura de alvos escritos pela GPU.
+// EN: Upload resources and write descriptors before opening the render pass.
+// PT-BR: Envie recursos e grave descritores antes de iniciar o render pass.
 #include "../gldirect/commands.h"
 #include <algorithm>
 #include <cstddef>

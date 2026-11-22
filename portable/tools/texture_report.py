@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Analyze CPU texture scan/decode metrics from PGR1 Vulkan frames.csv.
+"""EN: Analyze CPU texture scanning/decoding from Vulkan frames.csv.
+PT-BR: Analisa o custo de comparação/decodificação de texturas na CPU.
 
-Example: python3 portable/tools/texture_report.py .local/run/vulkan --window 300
+Example / Exemplo: python3 portable/tools/texture_report.py .local/run/vulkan --window 300
 """
 import argparse
 import csv
@@ -17,7 +18,9 @@ TIMES = ("texture_check_ms", "decode_ms", "capture_ms", "frame_ms")
 
 
 def read_frames(path: Path, after: int = 0, before: int | None = None):
-    """Return (valid frames, malformed messages); retain CSV rows in input order."""
+    """EN: Return valid frames and malformed rows.
+    PT-BR: Retorna frames válidos e registros incorretos, na ordem original.
+    """
     records, errors = [], []
     with path.open(encoding="utf-8-sig", newline="") as stream:
         reader = csv.DictReader(stream)
@@ -72,7 +75,8 @@ def report(rows, name="Selected frames"):
         nums = [row[key] for row in rows]
         print(f"  {key}: mean {statistics.mean(nums):.3f} ms; P95 {percentile(nums, 0.95):.3f} ms; "
               f"P99 {percentile(nums, 0.99):.3f} ms")
-    print("  Note: requested memcmp length is an upper bound; CPU comparison may stop early.")
+    print("  EN: Requested memcmp length is an upper bound (early exit possible).")
+    print("  PT-BR: A extensão solicitada ao memcmp é um limite superior; a comparação pode parar antes.")
 
 
 def main(argv=None):

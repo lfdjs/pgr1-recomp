@@ -235,6 +235,10 @@ int main(int argc, char** argv) {
     submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes\n";
     gpu_times<<"frame,gpu_ms\n";
     std::ofstream batch_log("vk_batches.csv");
+    // EN: One guest frame may generate many submissions (offscreen/fences).
+    // PT-BR: Um frame do Xbox pode gerar diversas submissões (offscreen/fences).
+    // Analyze all rows; never discard duplicate frame IDs.
+    // Analise todas as linhas; não descarte IDs de frame repetidos.
     batch_log<<"frame,accepted,render_passes,batched_groups,batched_draws,passes_saved\n";
     pgr::gldirect::Submission pending{};
     double execute_ms=0,shader_ms=0,fence_ms=0,acquire_ms=0,present_ms=0,gpu_ms=0;

@@ -75,8 +75,10 @@ struct Submission {
     std::uint64_t frame=0, draws=0, unsupported=0;
     std::uint64_t supported=0, rejected_draws=0, draw_ns=0, max_draw_ns=0, decode_ns=0, queue_wait_ns=0;
     std::uint64_t texture_check_ns=0, assemble_ns=0;
-    // CPU texture verification: bytes is the requested memcmp length, not
-    // the exact number read by an early-exiting comparison.
+    // EN: CPU texture verification: bytes is the requested memcmp length,
+    // not the precise number visited when the comparison exits early.
+    // PT-BR: bytes representa o tamanho pedido ao memcmp, não a quantidade
+    // efetivamente lida quando a comparação termina antecipadamente.
     std::uint64_t texture_static_binds=0, texture_memcmp_checks=0,
         texture_memcmp_bytes=0, texture_same_draw_reuses=0, texture_decodes=0;
     std::uint32_t front=0;

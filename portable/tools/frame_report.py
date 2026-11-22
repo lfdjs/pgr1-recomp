@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Report successful presentations when recorded; state assumptions for legacy CSVs."""
+"""EN: Report successful presentations and legacy CSV assumptions.
+PT-BR: Relata apresentações efetivas e premissas de CSVs antigos.
+"""
 import argparse
 import csv
 import math
@@ -19,7 +21,9 @@ def stats(name, values):
 
 
 def pacing(intervals, target_fps):
-    """Report measured intervals, with jitter tolerance stated rather than hidden."""
+    """EN: Report real intervals and disclose the jitter tolerance.
+    PT-BR: Relata intervalos reais e explicita a tolerância de variação.
+    """
     budget = 1000 / target_fps
     worst = sorted(intervals, reverse=True)[:max(1, math.ceil(len(intervals) / 100))]
     exact = sum(t > budget for t in intervals)

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Unit tests for portable/tools/report_batches.py; no GPU needed."""
 import importlib.util
+import contextlib
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -39,6 +41,33 @@ class BatchReportTests(unittest.TestCase):
         good, errors = self.parse("1,5,3,1,2,1\n2,5,3,1,2,1\n3,5,3,1,2,1\n", 1, 3)
         self.assertEqual([x["frame"] for x in good], [2])
         self.assertEqual(errors, [])
+
+    def test_duplicate_frame_submissions_are_valid_and_aggregated(self):
+        # EN: Offscreen prefixes share the same guest frame; do not discard them.
+        # PT-BR: Prefixos fora da tela usam o mesmo frame; devem ser somados.
+        good, errors = self.parse(
+            "1,10,5,2,6,4\n"
+            "1,8,2,1,7,6\n"
+            "2,5,3,1,2,1\n"
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(good), 3)
+        frames = module.aggregate_frames(good)
+        self.assertEqual(len(frames), 2)
+        self.assertEqual(frames[0]["submissions"], 2)
+        self.assertEqual(frames[0]["accepted"], 18)
+        self.assertEqual(frames[0]["passes_saved"], 10)
+        self.assertEqual(frames[1]["accepted"], 5)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            module.describe(good)
+        self.assertIn("submissions / submissões: 3", output.getvalue())
+        self.assertIn("18", output.getvalue())
+
+    def test_decreasing_frame_is_invalid(self):
+        good, errors = self.parse("3,5,3,1,2,1\n2,5,3,1,2,1\n")
+        self.assertEqual(len(good), 1)
+        self.assertIn("went backwards", errors[0])
 
     def test_missing_header_rejected(self):
         with tempfile.TemporaryDirectory() as temp:

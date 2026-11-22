@@ -238,8 +238,10 @@ public:
         for(unsigned i=0;i<std::min(s.scissor_count,8u);i++) p.scissors.push_back(Rectangle(s.scissors.data()+i*4));
         gpu::TexInfo tex_info[4]{};
         auto constants=Constants(s,c.target.width,c.target.height,program);
-        // A single synchronous Draw() has no guest execution between texture stages.
-        // Do not reuse across Draw calls: unmarked direct memory writes are legal.
+        // EN: A synchronous Draw() has no guest execution between texture stages.
+        // PT-BR: Durante um Draw() síncrono, o jogo não executa entre estágios.
+        // EN: Never reuse across draws: guest writes can bypass MarkDirty().
+        // PT-BR: Nunca reutilize entre draws: alterações podem ignorar MarkDirty().
         struct VerifiedTexture {
             TextureSnapshotKey key{};
             std::shared_ptr<const TexturePixels> pixels;
@@ -310,7 +312,7 @@ public:
             bool changed=!metadata_same;
             if(metadata_same) {
                 ++frame_.texture_memcmp_checks;
-                frame_.texture_memcmp_bytes+=bytes; // upper bound: memcmp may stop early
+                frame_.texture_memcmp_bytes+=bytes; // EN: upper bound (early exit); PT-BR: limite superior (saída antecipada)
                 changed=std::memcmp(guest,cached.guest.data(),bytes)!=0;
             }
             frame_.texture_check_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-check_start).count();

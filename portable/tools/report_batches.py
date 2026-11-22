@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Summarize PGR1 Vulkan batch telemetry and report truncated CSV records.
+"""EN: Summarize Vulkan batch submissions, preserving multiple submissions per frame.
+PT-BR: Resume as submissões Vulkan, incluindo várias submissões por frame.
 
-Usage: python3 portable/tools/report_batches.py .local/run/vulkan [--after-frame N] [--before-frame N]
+Usage / Uso:
+python3 portable/tools/report_batches.py .local/run/vulkan [--window 300]
 """
 import argparse
 import csv
@@ -40,8 +42,12 @@ def load_csv(path, after=0, before=None):
                 errors.append(f"line {line_no}: invalid integer/counter ({exc})")
                 continue
             current = values["frame"]
-            if last is not None and current <= last:
-                errors.append(f"line {line_no}: frame {current} not newer than {last}")
+            # EN: One game frame can produce several Vulkan submissions. Equal
+            # frame IDs are expected and MUST be included in the totals.
+            # PT-BR: Um frame pode gerar diversas submissões Vulkan. IDs iguais
+            # são válidos e DEVEM participar das estatísticas.
+            if last is not None and current < last:
+                errors.append(f"line {line_no}: frame {current} went backwards from {last}")
                 continue
             last = current
             if current <= after or (before is not None and current >= before):
@@ -57,19 +63,45 @@ def load_csv(path, after=0, before=None):
     return valid, errors
 
 
+def aggregate_frames(rows):
+    """EN: Group sequential submissions sharing a frame ID.
+    PT-BR: Agrupa submissões consecutivas do mesmo frame sem perder dados.
+    """
+    frames = []
+    for row in rows:
+        if frames and frames[-1]["frame"] == row["frame"]:
+            for field in REQUIRED[1:]:
+                frames[-1][field] += row[field]
+            frames[-1]["submissions"] += 1
+        else:
+            frames.append({**row, "submissions": 1})
+    return frames
+
+
 def describe(rows):
-    sums = {key: sum(row[key] for row in rows) for key in REQUIRED if key != "frame"}
-    n = len(rows)
+    frames = aggregate_frames(rows)
+    sums = {key: sum(frame[key] for frame in frames) for key in REQUIRED if key != "frame"}
     total = sums["accepted"]
     saved = sums["passes_saved"]
-    print(f"Frames analyzed: {n} ({rows[0]['frame']}..{rows[-1]['frame']})")
-    print(f"Accepted draws: {total:,}; render passes: {sums['render_passes']:,}")
-    print(f"Batched groups: {sums['batched_groups']:,}; batched draws: {sums['batched_draws']:,}")
-    print(f"Render passes saved: {saved:,} ({saved/(saved+sums['render_passes'])*100:.1f}% of estimated unbatched passes)" if saved+sums["render_passes"] else "Render passes saved: 0")
-    print(f"Draws grouped: {sums['batched_draws']/total*100:.1f}% of accepted" if total else "Draws grouped: n/a")
-    counts = [row["passes_saved"] for row in rows]
-    print(f"Saved passes/frame: mean {statistics.mean(counts):.2f}, max {max(counts)}")
-    print("Note: pass reductions do not by themselves demonstrate an FPS improvement.")
+    submissions = sum(frame["submissions"] for frame in frames)
+    print(f"Frames analyzed / Frames analisados: {len(frames)} "
+          f"({frames[0]['frame']}..{frames[-1]['frame']}); "
+          f"submissions / submissões: {submissions}")
+    print(f"Accepted draws / Desenhos aceitos: {total:,}; "
+          f"render passes / passes: {sums['render_passes']:,}")
+    print(f"Batched groups / Grupos: {sums['batched_groups']:,}; "
+          f"batched draws / draws agrupados: {sums['batched_draws']:,}")
+    baseline = saved + sums["render_passes"]
+    print(f"Render passes saved / Passes evitados: {saved:,} "
+          f"({saved/baseline*100:.1f}% of estimated unbatched passes)" if baseline
+          else "Render passes saved / Passes evitados: 0")
+    print(f"Draws grouped / Draws agrupados: {sums['batched_draws']/total*100:.1f}%"
+          if total else "Draws grouped / Draws agrupados: n/a")
+    counts = [frame["passes_saved"] for frame in frames]
+    print(f"Saved passes/frame / Passes evitados por frame: "
+          f"mean/média {statistics.mean(counts):.2f}, max/máximo {max(counts)}")
+    print("EN: Fewer passes alone do not prove higher FPS. "
+          "PT-BR: Menos passes não comprovam ganho de FPS.")
 
 
 def main(argv=None):
@@ -95,9 +127,11 @@ def main(argv=None):
     if not rows:
         p.error("no valid rows found in the requested frame range")
     describe(rows)
-    if args.window and len(rows) > args.window:
-        print(f"\nLast {args.window} valid frames:")
-        describe(rows[-args.window:])
+    grouped = aggregate_frames(rows)
+    if args.window and len(grouped) > args.window:
+        first = grouped[-args.window]["frame"]
+        print(f"\nLast {args.window} frames / Últimos {args.window} frames:")
+        describe([row for row in rows if row["frame"] >= first])
     return 0
 
 
