@@ -32,7 +32,8 @@ Earlier headless/OpenGL/Zink milestones are historical; Zink is not native
 Vulkan. Start with the [04C native runtime](07-vulkan-native-game.md), the
 [audio/RECOMP/AA report](08-audio-recomp-vulkan.md), the
 [CPU texture capture report](09-cpu-texture-capture.md), and the
-[latest RX 580 performance audit](10-auditoria-performance-2026-11-22.md).
+[latest RX 580 performance audit](10-auditoria-performance-2026-11-22.md)
+and the [texture cache experiment](11-cache-texturas-04d9.md).
 The engine-audio routing regression is resolved; full 30/60 FPS stability,
 fast MSAA and RTX 3060 Ti validation remain open.
 

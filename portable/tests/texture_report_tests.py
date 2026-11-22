@@ -51,6 +51,18 @@ class TextureReportTests(unittest.TestCase):
             self.assertFalse(issues)
             self.assertEqual(current[0]["texture_mip_levels_reused"], 3)
 
+    def test_optional_cache_counters_and_peak(self):
+        # EN: Read the new columns and preserve legacy support.
+        # PT-BR: Leia os novos campos e preserve CSVs anteriores.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "frames.csv"
+            path.write_text(HEADER.rstrip("\n") + "," + ",".join(module.CACHE_COUNTS) +
+                "\n1,5,4,8192,1,4,1,0,5,16,2,3,1,0,512\n")
+            rows, errors = module.read_frames(path)
+            self.assertFalse(errors)
+            self.assertEqual(rows[0]["texture_cache_evictions"], 2)
+            self.assertEqual(rows[0]["texture_cache_entries_peak"], 512)
+
     def test_old_schema_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             file = Path(tmp) / "frames.csv"

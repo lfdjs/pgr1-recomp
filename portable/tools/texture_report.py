@@ -18,6 +18,11 @@ TIMES = ("texture_check_ms", "decode_ms", "capture_ms", "frame_ms")
 # EN: Optional 04D.8 counters; old CSVs must still open.
 # PT-BR: Contadores opcionais da 04D.8; CSVs antigos devem continuar válidos.
 MIP_COUNTS = ("texture_mip_levels_decoded", "texture_mip_levels_reused")
+# EN: Optional cache breakdown from 04D.9, backward-compatible with older CSV.
+# PT-BR: Indicadores opcionais 04D.9; manter suporte aos CSVs anteriores.
+CACHE_COUNTS = ("texture_cache_evictions", "texture_cache_misses",
+                "texture_descriptor_redecodes", "texture_guest_redecodes",
+                "texture_cache_entries_peak")
 
 
 def read_frames(path: Path, after: int = 0, before: int | None = None):
@@ -45,7 +50,7 @@ def read_frames(path: Path, after: int = 0, before: int | None = None):
                     raise ValueError("non-finite metric")
                 if counts["texture_same_draw_reuses"] > counts["texture_static_binds"]:
                     raise ValueError("reuse exceeds static binds")
-                optional = {key: int(row[key]) for key in MIP_COUNTS if key in fields}
+                optional = {key: int(row[key]) for key in (*MIP_COUNTS, *CACHE_COUNTS) if key in fields}
                 if any(value < 0 for value in optional.values()):
                     raise ValueError("negative mip counter")
             except (TypeError, ValueError) as exc:
@@ -83,6 +88,19 @@ def report(rows, name="Selected frames"):
         print(f"  Mipmap levels / Níveis de mipmap: decoded/decodificados={decoded:,}; "
               f"reused/reutilizados={reused:,} "
               f"({100*reused/max(decoded+reused,1):.2f}% of refreshed levels)")
+    if all(key in rows[0] for key in CACHE_COUNTS):
+        evictions = sum(row["texture_cache_evictions"] for row in rows)
+        cold = sum(row["texture_cache_misses"] for row in rows)
+        layout = sum(row["texture_descriptor_redecodes"] for row in rows)
+        guest = sum(row["texture_guest_redecodes"] for row in rows)
+        peak = max(row["texture_cache_entries_peak"] for row in rows)
+        print(f"  Cache / Cache: evictions/remoções={evictions:,}; "
+              f"cold decodes/carregamentos iniciais={cold:,}; "
+              f"descriptor changes/mudanças de descritor={layout:,}; "
+              f"guest byte changes/alterações de bytes={guest:,}; "
+              f"peak entries/pico de entradas={peak:,}")
+        if cold+layout+guest != total["texture_decodes"]:
+            print("  WARNING / AVISO: decode reasons differ from texture_decodes")
     for key in TIMES:
         nums = [row[key] for row in rows]
         print(f"  {key}: mean {statistics.mean(nums):.3f} ms; P95 {percentile(nums, 0.95):.3f} ms; "
