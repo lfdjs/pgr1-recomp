@@ -37,6 +37,20 @@ class TextureReportTests(unittest.TestCase):
         self.assertEqual(module.percentile([1, 2, 3, 4, 5], 0.95), 5)
         self.assertEqual(module.percentile([], 0.99), 0)
 
+    def test_optional_mip_counters_and_legacy_format(self):
+        # EN/PT-BR: Old frames.csv works; new mip fields are parsed when present.
+        legacy, errors = self.parse("1,5,4,8192,1,0,1,0,5,16\n")
+        self.assertFalse(errors)
+        self.assertNotIn("texture_mip_levels_reused", legacy[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "frames.csv"
+            path.write_text(HEADER.rstrip("\n") +
+                ",texture_mip_levels_decoded,texture_mip_levels_reused\n" +
+                "1,5,4,8192,1,1,1,0,5,16,1,3\n")
+            current, issues = module.read_frames(path)
+            self.assertFalse(issues)
+            self.assertEqual(current[0]["texture_mip_levels_reused"], 3)
+
     def test_old_schema_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             file = Path(tmp) / "frames.csv"

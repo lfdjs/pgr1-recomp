@@ -15,6 +15,9 @@ COUNTS = (
     "texture_same_draw_reuses", "texture_decodes",
 )
 TIMES = ("texture_check_ms", "decode_ms", "capture_ms", "frame_ms")
+# EN: Optional 04D.8 counters; old CSVs must still open.
+# PT-BR: Contadores opcionais da 04D.8; CSVs antigos devem continuar válidos.
+MIP_COUNTS = ("texture_mip_levels_decoded", "texture_mip_levels_reused")
 
 
 def read_frames(path: Path, after: int = 0, before: int | None = None):
@@ -42,11 +45,14 @@ def read_frames(path: Path, after: int = 0, before: int | None = None):
                     raise ValueError("non-finite metric")
                 if counts["texture_same_draw_reuses"] > counts["texture_static_binds"]:
                     raise ValueError("reuse exceeds static binds")
+                optional = {key: int(row[key]) for key in MIP_COUNTS if key in fields}
+                if any(value < 0 for value in optional.values()):
+                    raise ValueError("negative mip counter")
             except (TypeError, ValueError) as exc:
                 errors.append(f"line {lineno}: {exc}")
                 continue
             if frame > after and (before is None or frame < before):
-                records.append({"frame": frame, **counts, **times})
+                records.append({"frame": frame, **counts, **times, **optional})
     return records, errors
 
 
@@ -71,6 +77,12 @@ def report(rows, name="Selected frames"):
           f"{total['texture_memcmp_bytes']/n/1048576:.1f} MiB/frame upper bound")
     print(f"  Decoded texture snapshots: {total['texture_decodes']:,} "
           f"({total['texture_decodes']/n:.2f}/frame)")
+    if all(key in rows[0] for key in MIP_COUNTS):
+        decoded = sum(row["texture_mip_levels_decoded"] for row in rows)
+        reused = sum(row["texture_mip_levels_reused"] for row in rows)
+        print(f"  Mipmap levels / Níveis de mipmap: decoded/decodificados={decoded:,}; "
+              f"reused/reutilizados={reused:,} "
+              f"({100*reused/max(decoded+reused,1):.2f}% of refreshed levels)")
     for key in TIMES:
         nums = [row[key] for row in rows]
         print(f"  {key}: mean {statistics.mean(nums):.3f} ms; P95 {percentile(nums, 0.95):.3f} ms; "

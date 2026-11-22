@@ -30,6 +30,7 @@
 #include "harness.h"
 #include "commands.h"
 #include "texture_snapshot_key.h"
+#include "texture_level_reuse.h"
 #include <array>
 
 namespace gpu {
@@ -319,12 +320,34 @@ public:
             if(changed) {
                 const auto decode_start=std::chrono::steady_clock::now();
                 auto pixels=std::make_shared<TexturePixels>();
-                for(unsigned face=0;face<(d.cube?6u:1u);face++) for(unsigned level=0;level<d.levels;level++) {
+                const unsigned face_count=d.cube?6u:1u;
+                // EN: Reusing unmodified mip levels is useful for swizzled
+                // and compressed multi-level textures. Preserve single-level decoding.
+                // PT-BR: Reutilizar mipmaps inalterados beneficia formatos swizzled
+                // e comprimidos. Mantenha a decodificação habitual de um único nível.
+                const bool previous_levels=metadata_same && !d.linear &&
+                    face_count*d.levels>1 && cached.pixels &&
+                    cached.pixels->levels.size()==std::size_t(face_count)*d.levels;
+                for(unsigned face=0;face<face_count;face++) for(unsigned level=0;level<d.levels;level++) {
+                    const std::size_t index=std::size_t(face)*d.levels+level;
+                    const std::size_t offset=std::size_t(face)*FaceSize(d)+LevelOffset(d,level);
+                    const std::size_t length=LevelSize(d,level);
+                    // EN: Reuse only if every byte in this mip is identical to
+                    // the previous immutable snapshot (not just DirtyEpoch).
+                    // PT-BR: Reutilize apenas se todos os bytes do mip coincidirem
+                    // com o snapshot anterior; DirtyEpoch não basta.
+                    if(previous_levels && TextureLevelUnchanged(
+                          guest,cached.guest.data(),bytes,offset,length)) {
+                        pixels->levels.push_back(cached.pixels->levels[index]);
+                        ++frame_.texture_mip_levels_reused;
+                        continue;
+                    }
                     std::vector<uint32_t> decoded;
-                    if(!DecodeBgra(d,level,static_cast<const uint8_t*>(kernel::HostPtr(d.data))+face*FaceSize(d),decoded)) {
+                    if(!DecodeBgra(d,level,guest+std::size_t(face)*FaceSize(d),decoded)) {
                         Unsupported("texture decoder format"); return;
                     }
                     pixels->levels.push_back(std::move(decoded));
+                    ++frame_.texture_mip_levels_decoded;
                 }
                 cached.desc=d; cached.pixels=pixels; cached.guest.assign(guest,guest+bytes);
                 ++frame_.texture_decodes;

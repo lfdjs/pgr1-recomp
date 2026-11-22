@@ -96,3 +96,33 @@ Consulte a [auditoria 04D.7](10-auditoria-performance-2026-11-22.md).
 
 Nenhum código de áudio, pós-processamento, MSAA ou reflexão foi alterado
 pela otimização original 04D.7.
+
+### Etapa 04D.8 — Reutilização por nível de mipmap (PT-BR)
+
+O backend pode detectar alteração em uma textura que possui múltiplos
+mipmaps, embora apenas um nível tenha mudado. A etapa 04D.8 compara
+**exatamente todos os bytes de cada nível** com o snapshot anterior e
+reutiliza níveis comprovadamente idênticos, mantendo sua cópia de pixels
+imutável. Texturas de um único nível preservam o caminho anterior. Essa
+reutilização atua em formatos swizzled/comprimidos; não ignora alterações
+sem `MarkDirty()` e não muda o áudio nem o Vulkan de apresentação.
+
+Novas colunas opcionais: `texture_mip_levels_decoded` e
+`texture_mip_levels_reused`. O relatório `texture_report.py` aceita
+tanto CSVs antigos quanto os novos. O teste de integração SDK altera
+primeiro o mipmap principal e depois o segundo nível, garantindo que
+somente o nível inalterado seja reaproveitado.
+
+A redução dos picos de `decode_ms` ainda precisa ser medida na pista de
+Londres; nenhum ganho de FPS foi presumido.
+
+### Stage 04D.8 — Per-mipmap reuse (EN)
+
+When a multi-level texture changes, the capture backend now compares
+the complete guest byte span of each level against its immutable previous
+snapshot, and reuses only levels whose bytes are exactly equal. Single-level
+textures keep their existing decoding path; no `MarkDirty` shortcut is
+assumed. The optional `texture_mip_levels_decoded` and
+`texture_mip_levels_reused` CSV fields are reported when present.
+SDK capture regression tests change level 0 and then level 1 and verify
+correct immutable results. A real London FPS gain is **not yet validated**.

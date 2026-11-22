@@ -81,6 +81,9 @@ struct Submission {
     // efetivamente lida quando a comparação termina antecipadamente.
     std::uint64_t texture_static_binds=0, texture_memcmp_checks=0,
         texture_memcmp_bytes=0, texture_same_draw_reuses=0, texture_decodes=0;
+    // EN: Mipmap levels rebuilt/reused after a texture snapshot changes.
+    // PT-BR: Mipmaps decodificados/reutilizados após mudança no snapshot.
+    std::uint64_t texture_mip_levels_decoded=0, texture_mip_levels_reused=0;
     std::uint32_t front=0;
     bool present=true;
     std::uint32_t reference_width=0, reference_height=0;

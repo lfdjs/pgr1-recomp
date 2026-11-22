@@ -125,6 +125,29 @@ int main() {
     const auto retained=f.commands[1].textures[0].pixels;
     backend->Draw(s,8,0,4,nullptr); backend->Present(s.rt); assert(Take(f));
     assert(f.commands[0].textures[0].pixels==retained);
+    // EN: Use a real two-level swizzled texture. Only the changed level
+    // may be re-decoded; previously submitted snapshots must remain immutable.
+    // PT-BR: Teste uma textura swizzled com dois mipmaps. Apenas o nível
+    // alterado pode ser decodificado novamente; snapshots antigos são imutáveis.
+    kernel::W32(0x130c,(0x06u<<8)|(2u<<16)|(5u<<20)|(5u<<24));
+    kernel::W32(0x1310,0);
+    for(unsigned i=0;i<16*16;i++)kernel::W32(0x40000+4096+i*4,0xff112233);
+    backend->Draw(s,8,0,4,nullptr);backend->Present(s.rt);assert(Take(f));
+    assert(f.commands.size()==1 && f.commands[0].textures[0].pixels->levels.size()==2);
+    const auto mips_initial=f.commands[0].textures[0].pixels;
+    kernel::W32(0x40000,0xffcafeba);
+    backend->Draw(s,8,0,4,nullptr);backend->Present(s.rt);assert(Take(f));
+    assert(f.texture_mip_levels_reused==1 && f.texture_mip_levels_decoded==1);
+    const auto mips_first=f.commands[0].textures[0].pixels;
+    assert(mips_first->levels[1]==mips_initial->levels[1]);
+    assert(mips_first->levels[0]!=mips_initial->levels[0]);
+    kernel::W32(0x40000+4096,0xff556677);
+    backend->Draw(s,8,0,4,nullptr);backend->Present(s.rt);assert(Take(f));
+    assert(f.texture_mip_levels_reused==1 && f.texture_mip_levels_decoded==1);
+    assert(f.commands[0].textures[0].pixels->levels[0]==mips_first->levels[0]);
+    assert(f.commands[0].textures[0].pixels->levels[1]!=mips_first->levels[1]);
+    kernel::W32(0x130c,(0x12u<<8));
+    kernel::W32(0x1310,31u|(31u<<12)|(1u<<24));
     // Console depth-bias units depend on the physical depth format and apply
     // to triangles only. D16 uses65535 steps instead of D24's16777215.
     s.simple[gpu::kMSolidOffsetEnable/4]=1;
