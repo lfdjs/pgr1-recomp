@@ -11,6 +11,28 @@ reimplemented for Windows (Direct3D 12 or 11, XAudio2, SDL). It is not an emulat
 > This project does not include any game assets. You must provide the files from your own legally acquired copy of
 > the game to build and play.
 
+## Linux portable / Portabilidade para Linux
+
+**Português (Brasil):** A branch [`portable`](https://github.com/lfdjs/pgr1-recomp/tree/portable)
+desenvolve a execução **nativa em Linux** do jogo recompilado, utilizando SDL3
+e Vulkan, além de preservar etapas históricas OpenGL/Zink para comparação.
+Consulte a [documentação de portabilidade (EN/PT-BR)](docs/portable/README.md),
+o [diagnóstico de áudio, RECOMP e MSAA](docs/portable/08-audio-recomp-vulkan.md)
+e a [auditoria recente de desempenho](docs/portable/10-auditoria-performance-2026-11-22.md).
+O áudio posicional principal da Quick Race foi corrigido, mas a estabilidade
+de 30/60 FPS, as reflexões e os testes completos em múltiplas GPUs
+continuam em desenvolvimento. Os arquivos originais do jogo não são incluídos.
+
+**English:** The [`portable`](https://github.com/lfdjs/pgr1-recomp/tree/portable)
+branch develops a **native Linux** runtime for statically recompiled PGR1,
+using SDL3 and Vulkan. Earlier OpenGL/Zink milestones remain for comparison.
+See the [bilingual portability documentation](docs/portable/README.md),
+the [audio/RECOMP/MSAA report](docs/portable/08-audio-recomp-vulkan.md)
+and the [latest performance audit](docs/portable/10-auditoria-performance-2026-11-22.md).
+Quick Race positional engine routing is fixed; stable 30/60 FPS, reflection
+parity and broader GPU validation remain open. Original game assets are
+not distributed.
+
 ## Supported Version
 
 Three Xbox releases of Project Gotham Racing (title id 4D530003). Each disc is its own compile of the game, so the build
