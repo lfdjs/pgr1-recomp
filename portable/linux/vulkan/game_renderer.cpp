@@ -1,4 +1,5 @@
 #include "game_renderer.h"
+#include "draw_batch.h"
 #include "vk_postfx.h"
 #include "quality_state.h"
 #include "present_counter.h"
@@ -554,7 +555,7 @@ struct Renderer::Impl {
         if(found!=framebuffer_cache.end()) { framebuffer=found->second;++stats.framebuffer_hits; }
         else { Check(vkCreateFramebuffer(device,&fb,nullptr,&framebuffer),"framebuffer");framebuffer_cache[attachments]=framebuffer;++stats.framebuffer_creates; }
         Barrier();VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};begin.renderPass=pass;begin.framebuffer=framebuffer;begin.renderArea.extent={color->w,color->h};
-        vkCmdBeginRenderPass(cmd,&begin,VK_SUBPASS_CONTENTS_INLINE);return pass;
+        vkCmdBeginRenderPass(cmd,&begin,VK_SUBPASS_CONTENTS_INLINE);++stats.render_passes;return pass;
     }
     std::array<VkShaderModule,2>& Modules(const std::shared_ptr<const ShaderPair>& pair) {
         auto it=modules.find(pair); if(it!=modules.end())return it->second;
@@ -999,6 +1000,19 @@ struct Renderer::Impl {
         }
         Begin(); Stage(frame);
         auto execute=Clock::now();
+        // Prepare descriptors and textures *outside* all render passes.  This
+        // operation is identical for single draws and for safe static batches.
+        auto prepareDraw=[&](const Command& draw,size_t index) -> std::pair<VkPipeline,VkDescriptorSet> {
+            if(draw.vertices.empty() || draw.draw_constants.empty())throw std::runtime_error("empty owned vertex/uniform data");
+            if(draw.draw_constants.size()>properties.limits.maxUniformBufferRange)throw std::runtime_error("DC exceeds uniform limit");
+            for(auto vertex_index:draw.indices)if(vertex_index>=draw.vertices.size())throw std::runtime_error("index outside owned vertex buffer");
+            auto color=TargetImage(draw.target); VkFormat depth=VK_FORMAT_UNDEFINED;
+            if(draw.target.depth) { auto z=TargetImage(draw.target,true);depth=z->format;if(Samples(z)!=Samples(color))Multisample(color,Samples(z)); }
+            auto pipeline=PipelineFor(draw,Pass(color->format,depth,Samples(color)));
+            return {pipeline,Bindings(draw,offsets[index])};
+        };
+        size_t batch_start=0,batch_end=0;
+        std::vector<std::pair<VkPipeline,VkDescriptorSet>> batch_prepared;
         for(size_t i=0;i<frame.commands.size();i++) {
             auto& c=frame.commands[i];
             if(c.kind==Command::Kind::Readback) { auto image=TargetImage(c.target,c.read_depth); Readback(image,c.readback); continue; }
@@ -1026,22 +1040,58 @@ struct Renderer::Impl {
                 if(!clears.empty() && !rects.empty())vkCmdClearAttachments(cmd,clears.size(),clears.data(),rects.size(),rects.data());
                 vkCmdEndRenderPass(cmd); color_versions[c.target.color]=++color_serial; continue;
             }
-            // Validate and create resources outside the render pass; uploads and
-            // barriers must never be recorded inside a Vulkan 1.0 subpass.
-            VkPipeline pipeline=VK_NULL_HANDLE; VkDescriptorSet set=VK_NULL_HANDLE;
-            try {
-                if(c.vertices.empty() || c.draw_constants.empty())throw std::runtime_error("empty owned vertex/uniform data");
-                if(c.draw_constants.size()>properties.limits.maxUniformBufferRange)throw std::runtime_error("DC exceeds uniform limit");
-                for(auto index:c.indices)if(index>=c.vertices.size())throw std::runtime_error("index outside owned vertex buffer");
-                auto color=TargetImage(c.target); VkFormat depth=VK_FORMAT_UNDEFINED;
-                if(c.target.depth) { auto z=TargetImage(c.target,true);depth=z->format;if(Samples(z)!=Samples(color))Multisample(color,Samples(z)); }
-                pipeline=PipelineFor(c,Pass(color->format,depth,Samples(color))); set=Bindings(c,offsets[i]);
-            } catch(const std::exception& e) {
-                Reject(e.what(),frame.frame);
-                if(c.visibility)c.visibility->set_exception(std::current_exception());
-                continue;
+            // Static textures can be uploaded before this render pass begins.
+            // Do not batch if any draw reads a rendered target or dynamic cube:
+            // those need the preceding draw to have finished/resolved first.
+            bool batched=i>=batch_start && i<batch_end;
+            bool have_single_prepared=false;
+            std::pair<VkPipeline,VkDescriptorSet> single_prepared{};
+            if(!batched) {
+                batch_prepared.clear();
+                const size_t candidate_end=batch::CandidateEnd(frame.commands,i);
+                if(candidate_end-i>=3) {
+                    std::vector<std::pair<VkPipeline,VkDescriptorSet>> prepared;
+                    prepared.reserve(candidate_end-i);
+                    for(size_t j=i;j<candidate_end;j++) {
+                        try { prepared.push_back(prepareDraw(frame.commands[j],j)); }
+                        catch(const std::exception&) { break; } // original rejection path runs at j
+                    }
+                    if(prepared.size()>1) {
+                        batch_start=i;batch_end=i+prepared.size();
+                        batch_prepared=std::move(prepared);
+                        // One pass and one MSAA resolve for the complete group.
+                        BeginTarget(c);
+                        ++stats.batched_groups;
+                        stats.batched_draws+=batch_end-batch_start;
+                        batched=true;
+                    } else if(prepared.size()==1) {
+                        // Avoid consuming a second descriptor set for the
+                        // first draw if the following candidate was invalid.
+                        single_prepared=prepared.front();
+                        have_single_prepared=true;
+                    }
+                }
             }
-            BeginTarget(c); vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline);
+            // Keep the original rejection behavior for non-batched draws.
+            VkPipeline pipeline=VK_NULL_HANDLE; VkDescriptorSet set=VK_NULL_HANDLE;
+            if(batched) {
+                const auto& prepared=batch_prepared.at(i-batch_start);
+                pipeline=prepared.first;set=prepared.second;
+            } else if(have_single_prepared) {
+                pipeline=single_prepared.first;set=single_prepared.second;
+                BeginTarget(c);
+            } else {
+                try {
+                    const auto prepared=prepareDraw(c,i);
+                    pipeline=prepared.first;set=prepared.second;
+                } catch(const std::exception& e) {
+                    Reject(e.what(),frame.frame);
+                    if(c.visibility)c.visibility->set_exception(std::current_exception());
+                    continue;
+                }
+                BeginTarget(c);
+            }
+            vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline);
             const auto image_extent=colors.at(c.target.color);
             VkViewport viewport{0,0,float(image_extent->w),float(image_extent->h),0,1}; vkCmdSetViewport(cmd,0,1,&viewport);
             const auto& p=c.pipeline; float blend[4]={Channel(p.blend_color,16),Channel(p.blend_color,8),Channel(p.blend_color,0),Channel(p.blend_color,24)}; vkCmdSetBlendConstants(cmd,blend);
@@ -1060,7 +1110,8 @@ struct Renderer::Impl {
             };
             if(p.scissors.empty())draw(p.viewport); else for(auto r:p.scissors)draw(r);
             if(c.visibility) { vkCmdEndQuery(cmd,occlusion_pool,query); counted.push_back({c.visibility,query,unsigned(Samples(image_extent))}); }
-            vkCmdEndRenderPass(cmd); color_versions[c.target.color]=++color_serial; ++stats.accepted;
+            if(!batched || i+1==batch_end)vkCmdEndRenderPass(cmd);
+            color_versions[c.target.color]=++color_serial; ++stats.accepted;
         }
         Barrier(); stats.execute_ms=Millis(execute);
         bool present=false; unsigned image_index=0;

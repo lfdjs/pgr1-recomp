@@ -234,6 +234,8 @@ int main(int argc, char** argv) {
     timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent\n";
     submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent\n";
     gpu_times<<"frame,gpu_ms\n";
+    std::ofstream batch_log("vk_batches.csv");
+    batch_log<<"frame,accepted,render_passes,batched_groups,batched_draws,passes_saved\n";
     pgr::gldirect::Submission pending{};
     double execute_ms=0,shader_ms=0,fence_ms=0,acquire_ms=0,present_ms=0,gpu_ms=0;
     std::uint64_t accepted=0,rejected=0,indexed=0,nonindexed=0,total_frames=0,total_accepted=0,total_rejected=0,last_guest_frame=0;
@@ -297,6 +299,9 @@ int main(int argc, char** argv) {
                 pgr::gldirect::Fail(ex.what());
             }
             const auto stats=renderer->LastStats();
+            batch_log<<next.frame<<','<<stats.accepted<<','<<stats.render_passes<<','
+                     <<stats.batched_groups<<','<<stats.batched_draws<<','
+                     <<(stats.batched_draws-stats.batched_groups)<<'\n';
             last_guest_frame=next.frame;
             if (render_ok) total_accepted+=stats.accepted;
             total_rejected+=stats.rejected;

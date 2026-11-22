@@ -17,6 +17,7 @@ public:
             descriptor_resets=0, framebuffer_hits=0, framebuffer_creates=0;
         // Dynamic reflection-cube cache diagnostics, per submitted batch.
         std::uint64_t cube_cache_creates=0, cube_cache_hits=0, cube_face_copies=0;
+        std::uint64_t render_passes=0, batched_groups=0, batched_draws=0;
         bool presented=false;
         bool acquire_timeout=false;
         std::vector<GpuSample> gpu_samples;
