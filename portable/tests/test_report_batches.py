@@ -62,7 +62,9 @@ class BatchReportTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             module.describe(good)
         self.assertIn("submissions / submissões: 3", output.getvalue())
-        self.assertIn("18", output.getvalue())
+        # EN: Output summarizes ALL frame IDs: 18 in frame 1 + 5 in frame 2.
+        # PT-BR: O resumo soma TODOS os frames: 18 no frame 1 + 5 no frame 2.
+        self.assertIn("Accepted draws / Desenhos aceitos: 23", output.getvalue())
 
     def test_decreasing_frame_is_invalid(self):
         good, errors = self.parse("3,5,3,1,2,1\n2,5,3,1,2,1\n")
