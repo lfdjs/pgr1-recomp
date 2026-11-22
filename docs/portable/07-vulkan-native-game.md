@@ -1,5 +1,14 @@
 # Etapa 04C — comandos do PGR1 no Vulkan nativo
 
+> **English summary — Stage 04C.** Connects the statically recompiled PGR1
+> runtime and SDK GPU commands to the native Linux Vulkan renderer through
+> owned submissions, translated SPIR-V and SDL3 presentation. Use
+> `scripts/portable-vulkan.sh build-game`, `test` and `run-game`.
+> Synthetic fixture success is not equivalent to complete game or hardware
+> validation; later 04D revisions supersede some implementation details.
+
+---
+
 Esta etapa acrescenta um executável do jogo separado dos fixtures 04A/04B.
 O caminho é o código recompilado do PGR1, runtime Xbox do SDK, captura de
 `gpu::Backend`, fila de `Submission` próprias, Vulkan e swapchain SDL3.

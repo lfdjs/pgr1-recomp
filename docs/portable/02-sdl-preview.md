@@ -1,5 +1,12 @@
 # Etapa 02 — janela SDL3 para o PGR1 recompilado no Linux
 
+> **English summary — Stage 02.** Introduces a resizable SDL3 diagnostic
+> window showing intermittently captured CPU-reference frames, and forwards
+> keyboard/gamepad input through the harness command channel. It does not
+> produce real-time Xbox GPU rendering or prove 30/60 FPS gameplay.
+
+---
+
 **Natureza:** prévia de diagnóstico, ainda **não é um renderizador em tempo real**.
 Não substitui o `gpu::Backend` do SDK. Não altera `sdk/`, `src/game/`,
 `generated/`, arquivos XBE, nem o executável headless validado anteriormente.

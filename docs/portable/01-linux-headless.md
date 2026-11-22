@@ -1,5 +1,13 @@
 # Etapa 01 — Linux headless baseline e contratos do SDK
 
+> **English summary — Stage 01.** Validates the original XBE's SHA-1 for
+> three supported disc revisions, exercises SDK interfaces without game files,
+> and provides Linux headless build/diagnostic commands. The SDK submodule and
+> the original Windows build remain unchanged. This is a headless baseline,
+> not evidence of native GPU gameplay.
+
+---
+
 ## O que está implementado
 
 - CLI `scripts/portable-dev.sh` para diagnosticar dependências, compilar os testes do host e acionar as ferramentas

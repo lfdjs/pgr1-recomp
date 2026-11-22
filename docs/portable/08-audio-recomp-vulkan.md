@@ -1,5 +1,7 @@
 # Áudio, antialiasing e configurações RECOMP no Vulkan
 
+> [English detailed validation below / Validação detalhada em inglês abaixo](#causa-do-áudio-da-quick-race). [Resumo técnico em português](#português-brasil--síntese-técnica-da-validação-04d).
+
 Validação local em 11 de novembro de 2026. O trabalho partiu de `portable`,
 HEAD `1d706e2`, com mudanças locais anteriores de resolução, cache de recursos,
 pós-processamento e áudio. Essas mudanças foram preservadas e incorporadas.
@@ -295,3 +297,71 @@ Commits de implementação: `4ec2aea` (submixes posicionais) e `661c142`
 (controles gráficos, persistência e overlay). O commit de validação inclui este
 relatório, o roteiro Quick Race e a correção do cálculo de FPS nos relatórios.
 Os hashes completos e o resultado da publicação são informados na entrega.
+
+
+---
+
+## Português (Brasil) — síntese técnica da validação 04D
+
+> **Escopo:** esta seção apresenta a situação principal em português; o
+> relatório de validação detalhado, inclusive tabelas e caminhos de logs,
+> permanece na seção original em inglês acima.
+
+### Correção do áudio posicional da Quick Race
+
+O erro não era um multiplicador simples de distância. O jogo encaminha os
+motores dos carros para **submixes mono com posicionamento 3D**, porém a
+implementação anterior de `SetOutputBuffer` no SDK ignorava o roteamento e
+entregava amostras diretamente na saída estéreo. Isso contornava a atenuação
+por distância já calculada para o destino.
+
+A sobreposição de código de DirectSound criada apenas no diretório de build
+passou a somar os sons dos motores aos buses posicionais, antes de aplicar
+volume, orientação e distribuição por canais. A revisão fixada do SDK não
+foi modificada. O rastreamento real identificou motores mono Xbox ADPCM
+(`0x69`), buffers de destino 3D e chamadas de roteamento. **O XACT Voice
+Data não era usado por esse executável**, razão pela qual a tentativa
+anterior de correção não produziu efeito. O jogador confirmou que o problema
+principal foi corrigido; ainda falta uma auditoria fina em diferentes câmeras.
+
+### Menu RECOMP e apresentação Vulkan
+
+O menu agora controla FXAA, nitidez, escala interna, filtragem e contador
+de apresentações reais; preferências Linux são armazenadas em
+`$XDG_CONFIG_HOME/pgr1-recomp/linux.conf` ou
+`$HOME/.config/pgr1-recomp/linux.conf`.
+
+O MSAA 2×/4× realiza resolve de cor e profundidade quando a GPU suporta
+os recursos Vulkan necessários, porém apresenta **alto custo na RX 580**.
+SMAA e MSAA 8× continuam indisponíveis. A opção de FPS mede apresentações
+aceitas por `vkQueuePresentKHR`, e não somente atualizações da simulação.
+
+A precedência das configurações é: padrões → arquivo persistente →
+variáveis de ambiente na inicialização → menu em tempo real.
+As variáveis `PGR1_VK_MSAA`, `PGR1_VK_FXAA` e
+`PGR1_VK_INTERNAL_PERCENT` podem ser usadas em benchmarks controlados.
+
+### Medições históricas do Codex (RX 580)
+
+| Configuração | FPS médio na amostra | Tempo médio de GPU |
+| --- | ---: | ---: |
+| Sem AA | 23,89 | 10,91 ms |
+| FXAA | 23,80 | 11,39 ms |
+| MSAA 2× | 8,91 | 61,22 ms |
+| MSAA 4× | 6,67 | 95,29 ms |
+
+As medições cobrem 240 apresentações selecionadas de uma Quick Race;
+**não são um resultado de corrida completa**. À época, cada draw iniciava
+um render pass e provocava resolves caros. A etapa 04D.6 introduziu
+agrupamento de draws; o resultado final deve ser comparado com os relatórios
+atuais, sem misturar cenas.
+
+### Validação e limites
+
+O Codex reportou oito testes CTest aprovados, verificações de áudio PCM,
+menu, capturas de pixels e execução da Quick Race na RX 580. A RTX 3060 Ti
+não estava disponível nessa validação. A fidelidade completa dos reflexos,
+a meta de 60 FPS e o refinamento auditivo permanecem demandas abertas.
+
+Veja também o [diagnóstico de captura CPU 04D.7](09-cpu-texture-capture.md)
+e a [auditoria de desempenho mais recente](10-auditoria-performance-2026-11-22.md).

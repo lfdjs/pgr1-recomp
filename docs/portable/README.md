@@ -1,5 +1,44 @@
 # PGR1 Portable
 
+## Visão geral em português (Brasil)
+
+A branch `portable` contém o port nativo Linux do **Project Gotham Racing 1**,
+com o código original recompilado estaticamente, runtime Xbox preservado em
+submódulo fixado, SDL3 e renderização Vulkan nativa. Há também etapas
+históricas de experimentos headless, OpenGL e Zink; **Zink não é Vulkan nativo**.
+
+Para o estado atual, comece pela [Etapa 04C — execução Vulkan do jogo](07-vulkan-native-game.md),
+pelo [relatório de áudio, opções RECOMP e antialiasing](08-audio-recomp-vulkan.md),
+pela [captura CPU de texturas](09-cpu-texture-capture.md) e pela
+[auditoria recente da RX 580](10-auditoria-performance-2026-11-22.md).
+
+**Situação:** o problema principal do áudio espacial dos adversários foi
+corrigido; resolução dinâmica, FXAA e contador de FPS funcionam. O MSAA
+ainda pode ser muito caro, e a estabilidade entre 30 e 60 FPS continua em
+desenvolvimento. O port ainda precisa de testes comparáveis em Londres e
+na RTX 3060 Ti. Informações históricas não devem ser tratadas como validação
+do código mais recente.
+
+**Convenção para novos commits:** preservar nomes de APIs, variáveis e
+símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
+adicionar seções em português e inglês aos novos documentos técnicos.
+Os registros históricos continuam disponíveis, com resumos bilíngues.
+
+## English overview
+
+The `portable` branch hosts a native Linux port of statically recompiled
+PGR1, SDL3 audio, the pinned Xbox runtime and native Vulkan rendering.
+Earlier headless/OpenGL/Zink milestones are historical; Zink is not native
+Vulkan. Start with the [04C native runtime](07-vulkan-native-game.md), the
+[audio/RECOMP/AA report](08-audio-recomp-vulkan.md), the
+[CPU texture capture report](09-cpu-texture-capture.md), and the
+[latest RX 580 performance audit](10-auditoria-performance-2026-11-22.md).
+The engine-audio routing regression is resolved; full 30/60 FPS stability,
+fast MSAA and RTX 3060 Ti validation remain open.
+
+---
+
+
 Current: native Linux GPU runtime with translated SDK shaders, SDL3 audio and
 OpenGL/Zink race validation. See [native runtime](04-native-linux.md) and
 [validation report](validation-2026-11-08.md). Performance and visual parity remain open.

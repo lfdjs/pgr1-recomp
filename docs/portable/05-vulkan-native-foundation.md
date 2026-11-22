@@ -1,5 +1,13 @@
 # PGR1 Portable 04A — Native Vulkan foundation, not a gameplay renderer
 
+> **Resumo em português — Etapa 04A.** Implementa um teste independente
+> de janela e apresentação usando Vulkan nativo e swapchain SDL3, com
+> limpeza de cor, barreiras, semáforos e filas. A imagem é gerada pelo teste:
+> não existe geometria de corrida ou shaders do PGR1 nesta etapa.
+> O comando antigo `portable-linux.sh run-vulkan` continua sendo o modo Zink.
+
+---
+
 Base reviewed: lfdjs/pgr1-recomp `portable` at `0f35b3a916deaf89f899fd47d25923a84d838ad3` (8 Nov 2026). Installed additively; does not change `scripts/portable-linux.sh`, its accelerated OpenGL game executable, the Zink mode, the SDK gitlink, game assets, or generated C++.
 
 ## Scope (strict)

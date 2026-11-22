@@ -1,5 +1,13 @@
 # PGR1 Portable — OpenGL FVF geometry increment
 
+> **Resumo em português — Etapa 03C.2 (histórica).** O backend captura
+> geometria FVF já montada pelo SDK e a envia como comandos independentes
+> de API ao OpenGL 3.3, com índices convertidos e estados básicos de
+> profundidade. A etapa ainda não comprova fidelidade de cenas completas e
+> foi sucedida pelo runtime com shaders traduzidos da etapa 04.
+
+---
+
 This historical increment is superseded by [the native shader/resource stage](04-native-linux.md).
 
 This supersedes the clear-only 03C.1 implementation. It is an experimental renderer,

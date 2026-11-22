@@ -1,5 +1,13 @@
 # PGR1 Portable — 03C.1: single-process SDL3/OpenGL bridge
 
+> **Resumo em português — Etapa 03C.1 (histórica).** A ponte SDL3/OpenGL
+> em processo único registra Clear/Present e mostra cores de limpeza; não
+> desenha a geometria do jogo. Este protótipo foi substituído pela etapa 03C.2,
+> que acrescentou desenhos FVF na GPU. Não utilize o FPS da 03C.1 como métrica
+> de gameplay real.
+
+---
+
 **Historical stage description.** The implementation is now superseded by
 [the FVF geometry increment](03c2-gpu-geometry.md), including its validation limits.
 The instructions below describe the earlier clear-only prototype.

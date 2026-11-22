@@ -1,5 +1,13 @@
 # PGR1 Portable Stage 03B — CPU rendering baseline & profiling
 
+> **Resumo em português — Etapa 03B.** Experimento isolado com otimização
+> de compilação e medições do renderizador de referência na CPU. A captura
+> adaptativa diminui o custo médio de amostragem, mas não elimina travamentos
+> nos frames efetivamente rasterizados. Não equivale à execução Vulkan/OpenGL
+> nativa do PGR1.
+
+---
+
 This stage is an **isolated performance experiment**. It is **not** an OpenGL Xbox 3D renderer.
 The user's OpenGL triangle test validates a graphics context, not the translation of Xbox
 vertex shaders and pixel combiners. The PGR1 reference renderer still runs on the CPU.

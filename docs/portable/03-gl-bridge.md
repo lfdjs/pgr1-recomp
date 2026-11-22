@@ -1,5 +1,13 @@
 # Etapa 03A — OpenGL bootstrap + reference frame IPC
 
+> **Resumo em português — Etapa 03A.** A inicialização OpenGL valida o
+> contexto 3.3 e shaders GLSL usando um triângulo de teste, sem renderizar
+> geometria do Xbox. O visualizador substitui arquivos TGA por frames BGRA8
+> em memória compartilhada, mas a rasterização de referência ainda roda na CPU.
+> Trata-se de uma ponte de diagnóstico, não de um port gráfico concluído.
+
+---
+
 This milestone is a **diagnostic bridge**, not a replacement for the Xbox GPU hardware pipeline.
 It is deliberately additive: stage 02's `scripts/portable-gui.sh run`, original Linux headless harness,
 Windows D3D11/D3D12 backends, game hooks, and the SDK submodule remain unchanged.

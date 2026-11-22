@@ -1,5 +1,14 @@
 # Native Linux runtime: SDK shaders and resource synchronization
 
+> **Resumo em português — Etapa 04.** O runtime Linux nativo usa SDL3 e
+> OpenGL com shaders traduzidos, sincronização de recursos e validações de
+> geometria/pixels. O modo `run-vulkan` deste runtime seleciona **Zink**
+> (OpenGL sobre Vulkan); não deve ser confundido com o executável de Vulkan
+> nativo descrito na etapa 04C. Preserve o SDK fixado e as limitações de
+> validação registradas neste documento.
+
+---
+
 This stage starts from `808d49a`, preserving the earlier `32daba9` geometry work and
 the recovered SDK gitlink `97b1654736f744a3966b5dff3d49be6d61ac7244`. The initial fetch
 found `origin/portable` at `25c262f` and two local commits ahead, with no divergence.

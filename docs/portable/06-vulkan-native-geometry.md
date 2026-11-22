@@ -1,5 +1,12 @@
 # Etapa 04B — pipeline gráfico Vulkan 1.0, FVF/XY... e seleção AMD/NVIDIA
 
+> **English summary — Stage 04B.** Extends the native Vulkan swapchain
+> fixture with real indexed FVF geometry, shader modules, pipelines, buffers
+> and AMD/NVIDIA selection. The generated test triangle is not a PGR1 race.
+> SDK capture and the actual game loop are connected in Stage 04C and later.
+
+---
+
 ## O que foi entregue (e o que NÃO foi)
 
 04B continua a 04A: o executável `pgr1_vk_wsi` pode criar uma swapchain nativa e agora

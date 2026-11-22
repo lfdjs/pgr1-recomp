@@ -1,5 +1,14 @@
 # Linux GPU validation — 2026-11-08
 
+> **Resumo em português — Validação de 08/11/2026.** Registro histórico
+> do backend OpenGL Linux e do modo Zink na RTX 3060 Ti, com o SDK fixado.
+> Os testes incluem compilação, shaders traduzidos, geometria, texturas,
+> render targets e comparação de pixels. **Não** são medições do backend
+> Vulkan nativo introduzido posteriormente; preserve as datas e os limites
+> de aceitação do relatório original.
+
+---
+
 Initial HEAD: `808d49a`; preserved geometry commit `32daba9` and available SDK
 `97b1654736f744a3966b5dff3d49be6d61ac7244`. Initial origin/portable: `25c262f`.
 No SDK source changes. Disc: locally supplied USA 1.0, SHA-1
