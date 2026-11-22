@@ -34,7 +34,7 @@ Vulkan. Start with the [04C native runtime](07-vulkan-native-game.md), the
 [CPU texture capture report](09-cpu-texture-capture.md), and the
 [latest RX 580 performance audit](10-auditoria-performance-2026-11-22.md)
 and the [texture cache experiment](11-cache-texturas-04d9.md).
-The engine-audio routing regression is resolved; full 30/60 FPS stability,
+The engine-audio routing regression is resolved; the native Vulkan CPU texture cache now defaults to 1,024 entries after an A/B test exposed eviction thrashing. Full 30/60 FPS stability,
 fast MSAA and RTX 3060 Ti validation remain open.
 
 ---

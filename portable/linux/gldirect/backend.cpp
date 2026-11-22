@@ -137,9 +137,17 @@ class GLBackend final : public Backend {
     };
     std::unordered_map<uint32_t,CachedPixels> textures_;
     uint64_t texture_clock_=0;
-    // EN: Bounded cache experiment; keep the production default at 512.
-    // PT-BR: Teste de cache limitado; preserve o padrão de 512 entradas.
-    const unsigned texture_cache_entries_=TextureCacheEntries(std::getenv("PGR1_VK_TEXTURE_CACHE_ENTRIES"));
+    // EN: Native Vulkan defaults to 1024 entries after the RX 580 cache-thrash
+    // test; legacy OpenGL still defaults to 512. The env override remains valid.
+    // PT-BR: Vulkan usa 1024 entradas após os testes de expulsão na RX 580;
+    // OpenGL legado continua em 512. A variável de ambiente tem prioridade.
+#ifdef PGR1_NATIVE_VULKAN
+    static constexpr bool kVulkanTextureCache=true;
+#else
+    static constexpr bool kVulkanTextureCache=false;
+#endif
+    const unsigned texture_cache_entries_=TextureCacheEntries(
+        std::getenv("PGR1_VK_TEXTURE_CACHE_ENTRIES"),TextureCacheDefault(kVulkanTextureCache));
 
     void Unsupported(const char* reason) {
         ++unsupported_;

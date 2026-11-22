@@ -17,7 +17,7 @@ substituições frequentes das entradas do cache.
 
 ### Instrumentação e limites
 
-O cache da CPU mantém 512 entradas por padrão. As novas colunas de
+Na etapa 04D.9, o cache da CPU mantinha 512 entradas por padrão. Após a comparação A/B, a etapa 04D.10 passou a utilizar 1.024 entradas no Vulkan nativo (o OpenGL legado continua em 512). As novas colunas de
 `frames.csv` e `submissions.csv` são:
 
 - `texture_cache_evictions`: remoções por limite de entradas;
@@ -31,7 +31,7 @@ Não se eliminou nenhuma verificação obrigatória entre draws; o jogo
 pode escrever diretamente nos endereços de textura sem `MarkDirty()`.
 
 Para investigar lotação, a variável `PGR1_VK_TEXTURE_CACHE_ENTRIES`
-permite valores inteiros de 64 a 2048 (padrão 512). Valores inválidos
+permite valores inteiros de 64 a 2048 (padrão atual: 1.024 no Vulkan; 512 no OpenGL legado). Valores inválidos
 caem no padrão. O ajuste exige reiniciar o jogo. **1.024 entradas podem
 aumentar significativamente a RAM**, sem garantia de ganho de FPS.
 
@@ -71,9 +71,33 @@ cache entries**. The three decode reasons should sum to
 `texture_decodes`. Guest bytes remain checked between draws to
 detect writes that bypass `MarkDirty()`.
 
-The default cache remains at **512 entries**. A bounded startup-only
-`PGR1_VK_TEXTURE_CACHE_ENTRIES` override accepts 64..2048, using
-512 for invalid values. Larger caches may consume substantially more
+The 04D.9 experiment originally defaulted to **512 entries**. Since 04D.10, native Vulkan defaults to **1,024 entries**; the legacy OpenGL backend remains at 512. A bounded startup-only
+`PGR1_VK_TEXTURE_CACHE_ENTRIES` override accepts 64..2048, using the backend's default for invalid values. Larger caches may consume substantially more
 host RAM and are **not** guaranteed to increase FPS. Compare the
 same London Quick Race with 512 vs 1024 entries while keeping
 AA, resolution and scene identical. Audio routing is untouched.
+
+## 04D.10 — Resultado A/B e novo padrão / A/B evidence and default
+
+**Português (Brasil).** O teste posterior registrou 3.502 frames com cache
+512 e 4.497 com cache 1.024 (sessões não equivalentes em duração/cena).
+O cache menor realizou 52.763 expulsões e 53.275 carregamentos iniciais,
+enquanto o maior apresentou **zero expulsões**, 1.013 carregamentos iniciais
+e ocupação máxima de 1.013 entradas. Decodificações totais: 53.452
+versus 1.166. Alterações reais de memória: 177 versus 153.
+
+Os contadores comprovam o **cache thrashing** com 512 entradas; a diferença
+de FPS entre as sessões não constitui benchmark controlado. O Vulkan nativo
+agora usa 1.024 por padrão, preservando `PGR1_VK_TEXTURE_CACHE_ENTRIES=512`
+para comparação ou economia de RAM. Ao trocar de pista, observe se há
+expulsões com 1.024; para estudar outras cargas, há opções de até 2.048.
+
+**English.** The subsequent A/B runs reported 3,502 frames at 512 entries
+and 4,497 at 1,024 (not equal-length or scene-matched samples).
+The smaller cache produced 52,763 evictions and 53,275 cold decodes.
+The larger produced **zero evictions**, 1,013 cold decodes and a peak of
+1,013 entries. Total decodes fell from 53,452 to 1,166; guest-byte
+changes were 177 versus 153. These counts demonstrate cache thrashing
+at 512, **not** a controlled FPS improvement. Native Vulkan now defaults
+to 1,024 while legacy OpenGL remains at 512; the environment override
+still supports lower RAM use or a larger capacity.
