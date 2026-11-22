@@ -84,6 +84,11 @@ struct Submission {
     // EN: Mipmap levels rebuilt/reused after a texture snapshot changes.
     // PT-BR: Mipmaps decodificados/reutilizados após mudança no snapshot.
     std::uint64_t texture_mip_levels_decoded=0, texture_mip_levels_reused=0;
+    // EN: Separate cold cache, descriptor changes, guest writes and eviction.
+    // PT-BR: Separe cache vazio, mudanças de descritor, escritas e remoções.
+    std::uint64_t texture_cache_evictions=0, texture_cache_misses=0,
+        texture_descriptor_redecodes=0, texture_guest_redecodes=0,
+        texture_cache_entries_peak=0;
     std::uint32_t front=0;
     bool present=true;
     std::uint32_t reference_width=0, reference_height=0;

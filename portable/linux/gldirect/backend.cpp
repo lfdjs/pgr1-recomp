@@ -31,6 +31,8 @@
 #include "commands.h"
 #include "texture_snapshot_key.h"
 #include "texture_level_reuse.h"
+#include "texture_cache_policy.h"
+#include <cstdlib>
 #include <array>
 
 namespace gpu {
@@ -135,6 +137,9 @@ class GLBackend final : public Backend {
     };
     std::unordered_map<uint32_t,CachedPixels> textures_;
     uint64_t texture_clock_=0;
+    // EN: Bounded cache experiment; keep the production default at 512.
+    // PT-BR: Teste de cache limitado; preserve o padrão de 512 entradas.
+    const unsigned texture_cache_entries_=TextureCacheEntries(std::getenv("PGR1_VK_TEXTURE_CACHE_ENTRIES"));
 
     void Unsupported(const char* reason) {
         ++unsupported_;
@@ -168,6 +173,8 @@ public:
 #else
         LOGR("gldirect: GPU FVF XYZRHW renderer %ux%u; SDK HLSL/SPIR-V/GLSL shaders enabled",w,h);
 #endif
+        LOGR("%s: CPU texture cache capacity / capacidade = %u entries",
+             kBackendName,texture_cache_entries_);
         return true;
     }
     void Clear(const State& s,uint32_t n,const uint8_t* rects,uint32_t flags,uint32_t color,float z,uint32_t stencil) override {
@@ -295,7 +302,10 @@ public:
                 }
             }
             if(reused_in_draw)continue;
-            if(textures_.size()>=512 && !textures_.contains(d.data)) {
+            if(textures_.size()>=texture_cache_entries_ && !textures_.contains(d.data)) {
+                // EN: Count evictions; distinguish cache churn from real writes.
+                // PT-BR: Conte remoções; diferencie a lotação de escritas reais.
+                ++frame_.texture_cache_evictions;
                 // Evict one least recently bound snapshot, not the whole scene.
                 // Commands retain shared ownership until the GPU consumes them.
                 auto oldest=std::min_element(textures_.begin(),textures_.end(),[](const auto& a,const auto& b) { return a.second.used<b.second.used; });
@@ -303,6 +313,8 @@ public:
             }
             auto& cached=textures_[d.data];
             cached.used=++texture_clock_;
+            frame_.texture_cache_entries_peak=std::max(
+                frame_.texture_cache_entries_peak,std::uint64_t(textures_.size()));
             const auto check_start=std::chrono::steady_clock::now();
             const auto bytes=TotalSize(d);
             const auto* guest=static_cast<const uint8_t*>(kernel::HostPtr(d.data));
@@ -349,6 +361,11 @@ public:
                     pixels->levels.push_back(std::move(decoded));
                     ++frame_.texture_mip_levels_decoded;
                 }
+                // EN: Classify why the snapshot must be decoded.
+                // PT-BR: Identifique a causa de cada snapshot decodificado.
+                if(!cached.pixels) ++frame_.texture_cache_misses;
+                else if(!metadata_same) ++frame_.texture_descriptor_redecodes;
+                else ++frame_.texture_guest_redecodes;
                 cached.desc=d; cached.pixels=pixels; cached.guest.assign(guest,guest+bytes);
                 ++frame_.texture_decodes;
                 frame_.decode_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-decode_start).count();

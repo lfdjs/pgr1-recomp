@@ -95,6 +95,9 @@ int main() {
     t[gpu::kTssMaxMipLevel]=1; t[gpu::kTssMaxAnisotropy]=8;
     backend->Draw(s,8,0,4,nullptr); backend->Present(s.rt); assert(Take(f));
     assert(f.commands.size()==1 && f.commands[0].textures[0].pixels->levels[0].size()==1024);
+    // EN: First static bind is a cold decode, not an eviction.
+    // PT-BR: Primeiro vínculo estático é uma decodificação inicial.
+    assert(f.texture_cache_misses==1 && f.texture_cache_evictions==0);
     assert(f.commands[0].textures[0].pixels->levels[0][0]==0xff123456);
     const auto& sampler=f.commands[0].textures[0];
     assert(sampler.wrap_w==2 && sampler.border_color==0x80402010);
@@ -119,6 +122,8 @@ int main() {
     backend->Draw(s,8,0,4,nullptr);
     backend->Present(s.rt); assert(Take(f));
     assert(f.commands.size()==2);
+    assert(f.texture_guest_redecodes==1);
+    assert(f.texture_cache_misses==0);
     assert(f.commands[0].textures[0].pixels->levels[0][17]==0xff123456);
     assert(f.commands[1].textures[0].pixels->levels[0][17]==0xfffedcba);
     // Unchanged bytes share the decoded allocation, without rescanning a hash.

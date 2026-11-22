@@ -79,6 +79,11 @@ if(BUILD_TESTING)
   target_compile_options(pgr1_texture_key_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
   add_test(NAME vk_texture_snapshot_identity COMMAND pgr1_texture_key_test)
   # EN/PT-BR: Exact-byte mipmap reuse regression / Teste de reutilização exata de mipmaps.
+  # EN/PT-BR: Bounded cache policy / Limites de capacidade do cache.
+  add_executable(pgr1_texture_cache_policy_test ../gldirect/tests/test_texture_cache_policy.cpp)
+  target_include_directories(pgr1_texture_cache_policy_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect")
+  target_compile_options(pgr1_texture_cache_policy_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME vk_texture_cache_entry_policy COMMAND pgr1_texture_cache_policy_test)
   add_executable(pgr1_texture_level_reuse_test ../gldirect/tests/test_texture_level_reuse.cpp)
   target_include_directories(pgr1_texture_level_reuse_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect")
   target_compile_options(pgr1_texture_level_reuse_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
