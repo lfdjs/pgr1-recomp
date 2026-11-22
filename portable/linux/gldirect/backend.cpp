@@ -29,6 +29,8 @@
 #include "core/log.h"
 #include "harness.h"
 #include "commands.h"
+#include "texture_snapshot_key.h"
+#include <array>
 
 namespace gpu {
 namespace {
@@ -236,6 +238,14 @@ public:
         for(unsigned i=0;i<std::min(s.scissor_count,8u);i++) p.scissors.push_back(Rectangle(s.scissors.data()+i*4));
         gpu::TexInfo tex_info[4]{};
         auto constants=Constants(s,c.target.width,c.target.height,program);
+        // A single synchronous Draw() has no guest execution between texture stages.
+        // Do not reuse across Draw calls: unmarked direct memory writes are legal.
+        struct VerifiedTexture {
+            TextureSnapshotKey key{};
+            std::shared_ptr<const TexturePixels> pixels;
+        };
+        std::array<VerifiedTexture,4> verified_this_draw{};
+        unsigned verified_count=0;
         bool fixed_enabled=true;
         for(unsigned stage=0;stage<4;stage++) {
             if(s.ps) {
@@ -270,6 +280,18 @@ public:
                 if(NoAlphaFormat(d.format)) tex_info[stage].flags|=kTexOpaque;
                 continue;
             }
+            ++frame_.texture_static_binds;
+            const TextureSnapshotKey signature{d.data,d.format,d.width,d.height,d.depth,d.levels,d.pitch,d.cube,d.linear};
+            bool reused_in_draw=false;
+            for(unsigned seen=0;seen<verified_count;++seen) {
+                if(verified_this_draw[seen].key==signature) {
+                    t.pixels=verified_this_draw[seen].pixels;
+                    ++frame_.texture_same_draw_reuses;
+                    reused_in_draw=true;
+                    break;
+                }
+            }
+            if(reused_in_draw)continue;
             if(textures_.size()>=512 && !textures_.contains(d.data)) {
                 // Evict one least recently bound snapshot, not the whole scene.
                 // Commands retain shared ownership until the GPU consumes them.
@@ -281,9 +303,16 @@ public:
             const auto check_start=std::chrono::steady_clock::now();
             const auto bytes=TotalSize(d);
             const auto* guest=static_cast<const uint8_t*>(kernel::HostPtr(d.data));
-            const bool changed=!cached.pixels || cached.desc.format!=d.format || cached.desc.width!=d.width ||
-               cached.desc.height!=d.height || cached.desc.levels!=d.levels || cached.desc.cube!=d.cube || cached.desc.pitch!=d.pitch ||
-               cached.guest.size()!=bytes || std::memcmp(guest,cached.guest.data(),bytes)!=0;
+            const bool metadata_same=cached.pixels && cached.desc.format==d.format && cached.desc.width==d.width &&
+               cached.desc.height==d.height && cached.desc.depth==d.depth && cached.desc.levels==d.levels &&
+               cached.desc.cube==d.cube && cached.desc.linear==d.linear && cached.desc.pitch==d.pitch &&
+               cached.guest.size()==bytes;
+            bool changed=!metadata_same;
+            if(metadata_same) {
+                ++frame_.texture_memcmp_checks;
+                frame_.texture_memcmp_bytes+=bytes; // upper bound: memcmp may stop early
+                changed=std::memcmp(guest,cached.guest.data(),bytes)!=0;
+            }
             frame_.texture_check_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-check_start).count();
             if(changed) {
                 const auto decode_start=std::chrono::steady_clock::now();
@@ -296,9 +325,11 @@ public:
                     pixels->levels.push_back(std::move(decoded));
                 }
                 cached.desc=d; cached.pixels=pixels; cached.guest.assign(guest,guest+bytes);
+                ++frame_.texture_decodes;
                 frame_.decode_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-decode_start).count();
             }
             t.pixels=cached.pixels;
+            verified_this_draw[verified_count++]={signature,t.pixels};
         }
         Assembled a;
         const auto assembly_start=std::chrono::steady_clock::now();

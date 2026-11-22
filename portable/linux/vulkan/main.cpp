@@ -231,8 +231,8 @@ int main(int argc, char** argv) {
     const double seconds=std::getenv("PGR1_RUN_SECONDS")?std::atof(std::getenv("PGR1_RUN_SECONDS")):0;
     auto ms=[](auto duration) { return std::chrono::duration<double,std::milli>(duration).count(); };
     std::ofstream timings("frames.csv"),submissions("submissions.csv"),gpu_times("gpu.csv");
-    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent\n";
-    submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent\n";
+    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes\n";
+    submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes\n";
     gpu_times<<"frame,gpu_ms\n";
     std::ofstream batch_log("vk_batches.csv");
     batch_log<<"frame,accepted,render_passes,batched_groups,batched_draws,passes_saved\n";
@@ -317,9 +317,16 @@ int main(int argc, char** argv) {
                 <<stats.staging_allocations<<','<<stats.staging_reuses<<','<<stats.descriptor_creates<<','
                 <<stats.descriptor_resets<<','<<stats.framebuffer_hits<<','<<stats.framebuffer_creates<<','
                 <<stats.presented_fps<<','<<stats.presented_frame_ms<<','<<(1u<<quality::msaa_applied.load())<<','
-                <<quality::fxaa.load()<<','<<quality::render_percent.load()<<'\n';
+                <<quality::fxaa.load()<<','<<quality::render_percent.load()<<','
+                <<next.texture_static_binds<<','<<next.texture_memcmp_checks<<','<<next.texture_memcmp_bytes<<','
+                <<next.texture_same_draw_reuses<<','<<next.texture_decodes<<'\n';
             pending.draw_ns+=next.draw_ns; pending.decode_ns+=next.decode_ns;
             pending.texture_check_ns+=next.texture_check_ns; pending.assemble_ns+=next.assemble_ns;
+            pending.texture_static_binds+=next.texture_static_binds;
+            pending.texture_memcmp_checks+=next.texture_memcmp_checks;
+            pending.texture_memcmp_bytes+=next.texture_memcmp_bytes;
+            pending.texture_same_draw_reuses+=next.texture_same_draw_reuses;
+            pending.texture_decodes+=next.texture_decodes;
             pending.max_draw_ns=std::max(pending.max_draw_ns,next.max_draw_ns);
             pending.queue_wait_ns+=next.queue_wait_ns; pending.supported+=next.supported;
             pending.rejected_draws+=next.rejected_draws;
@@ -341,7 +348,9 @@ int main(int argc, char** argv) {
                     <<nonindexed<<','<<stats.presented<<','<<stats.acquire_timeout<<','<<!render_ok<<','<<cube_creates<<','<<cube_hits<<','<<cube_copies<<','
                     <<staging_allocations<<','<<staging_reuses<<','<<descriptor_creates<<','<<descriptor_resets<<','
                     <<framebuffer_hits<<','<<framebuffer_creates<<','<<stats.presented_fps<<','<<stats.presented_frame_ms<<','
-                    <<(1u<<quality::msaa_applied.load())<<','<<quality::fxaa.load()<<','<<quality::render_percent.load()<<'\n';
+                    <<(1u<<quality::msaa_applied.load())<<','<<quality::fxaa.load()<<','<<quality::render_percent.load()<<','
+                    <<pending.texture_static_binds<<','<<pending.texture_memcmp_checks<<','<<pending.texture_memcmp_bytes<<','
+                    <<pending.texture_same_draw_reuses<<','<<pending.texture_decodes<<'\n';
                 if (stats.presented) ++total_frames;
                 last_frame=at; last_cpu=cpu; pending={};
                 execute_ms=shader_ms=fence_ms=acquire_ms=present_ms=gpu_ms=0;

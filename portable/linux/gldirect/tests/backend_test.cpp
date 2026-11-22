@@ -99,6 +99,19 @@ int main() {
     const auto& sampler=f.commands[0].textures[0];
     assert(sampler.wrap_w==2 && sampler.border_color==0x80402010);
     assert(sampler.lod_bias==-.75f && sampler.max_mip==1 && sampler.max_anisotropy==8);
+    // Identical texture stages within a Draw share immutable decoded pixels.
+    // Separate Draw calls still validate direct guest writes (tested below).
+    s.textures[1]=s.textures[0];
+    auto& second=s.tss[1];
+    second[gpu::kTssColorOp]=second[gpu::kTssAlphaOp]=4;
+    second[gpu::kTssColorArg1]=second[gpu::kTssAlphaArg1]=2;
+    backend->Draw(s,8,0,4,nullptr); backend->Present(s.rt); assert(Take(f));
+    assert(f.commands.size()==1 && f.texture_static_binds==2);
+    assert(f.texture_same_draw_reuses==1 && f.texture_memcmp_checks==1);
+    assert(f.texture_memcmp_bytes>=32*32*4);
+    assert(f.commands[0].textures[0].pixels==f.commands[0].textures[1].pixels);
+    s.textures[1]=0;
+    second[gpu::kTssColorOp]=second[gpu::kTssAlphaOp]=1;
     // Exact cache validation must detect unmarked CPU writes even within a
     // single frame. Previously submitted draws retain the old immutable pixels.
     backend->Draw(s,8,0,4,nullptr);
