@@ -21,7 +21,8 @@ do código mais recente.
 
 [Otimizações recentes do pipeline Vulkan](14-sobreposicao-cpu-gpu.md):
 sobreposicao CPU/GPU, [compilacao paralela](15-compilacao-paralela-shaders.md)
-e [reutilizacao de estados](16-estados-vulkan.md).
+e [reutilizacao de estados](16-estados-vulkan.md) e
+[expansao de vertices na CPU](17-expansao-vertices.md).
 
 [Seleção automática de GPU Vulkan (RX 580 / RTX 3060 Ti)](13-selecao-automatica-gpu.md):
 basta executar `bash scripts/portable-vulkan.sh run-game` nas duas máquinas.
@@ -44,7 +45,8 @@ Vulkan. Start with the [04C native runtime](07-vulkan-native-game.md), the
 and the [texture cache experiment](11-cache-texturas-04d9.md).
 Recent optimizations include [CPU/GPU overlap](14-sobreposicao-cpu-gpu.md),
 [parallel SPIR-V shader compilation](15-compilacao-paralela-shaders.md) and
-[Vulkan draw-state reuse](16-estados-vulkan.md).
+[Vulkan draw-state reuse](16-estados-vulkan.md) and
+[CPU vertex expansion](17-expansao-vertices.md).
 [Automatic Vulkan GPU selection](13-selecao-automatica-gpu.md) allows
 `bash scripts/portable-vulkan.sh run-game` on either AMD or NVIDIA
 without a vendor-specific environment variable.

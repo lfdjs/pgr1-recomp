@@ -32,6 +32,7 @@
 #include "texture_snapshot_key.h"
 #include "texture_level_reuse.h"
 #include "texture_cache_policy.h"
+#include "vertex_register_expand.h"
 #include <cstdlib>
 #include <array>
 
@@ -443,13 +444,14 @@ public:
         c.depth_slope_offset=offsetof(DrawConstants,wdepth)+sizeof(float);
         const unsigned stride=std::popcount(a.regs)*4;
         c.vertices.resize(a.vertex_count);
+        // EN: The active-register layout is constant across this draw; do
+        // not scan all 16 Xbox registers separately for every vertex.
+        // PT-BR: O layout de registradores e fixo durante o draw; evite
+        // percorrer os 16 registradores do Xbox a cada vertice.
+        const VertexRegisterExpander expander(a.regs);
         for(unsigned i=0;i<a.vertex_count;i++) {
-            std::array<std::array<float,4>,16> attrs{};
-            for(unsigned r=0;r<16;r++) attrs[r]=r==3 ? std::array<float,4>{1,1,1,1} : std::array<float,4>{0,0,0,1};
-            unsigned offset=0;
-            for(unsigned r=0;r<16;r++) if(a.regs&(1u<<r)) { std::copy_n(a.vertices.data()+i*stride+offset,4,attrs[r].data()); offset+=4; }
+            const auto attrs=expander.Expand(a.vertices.data()+size_t(i)*stride);
             auto& o=c.vertices[i]; o={attrs[0],attrs[3],attrs[9],attrs};
-
         }
         c.indices=a.indices;
         if(a.index_count && c.indices.size()!=a.index_count) { Unsupported("unexpected assembler index path"); return; }

@@ -74,6 +74,12 @@ if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/xdk/dsound.cpp")
 endif()
 
 if(BUILD_TESTING)
+  # EN: Compare expanded Xbox vertex attributes against the original mapping.
+  # PT-BR: Compare os atributos expandidos com o mapeamento original do Xbox.
+  add_executable(pgr1_vk_vertex_expander_test ../gldirect/tests/test_vertex_register_expand.cpp)
+  target_include_directories(pgr1_vk_vertex_expander_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect")
+  target_compile_options(pgr1_vk_vertex_expander_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME vk_vertex_register_expansion COMMAND pgr1_vk_vertex_expander_test)
   # EN: Verify that state changes invalidate safe draw-batch binding reuse.
   # PT-BR: Garanta atualizacao de estados ao trocar pipeline/blend/pass.
   add_executable(pgr1_vk_draw_bind_state_test test_draw_bind_state.cpp)
