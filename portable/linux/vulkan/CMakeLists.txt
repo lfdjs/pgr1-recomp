@@ -74,6 +74,11 @@ if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/xdk/dsound.cpp")
 endif()
 
 if(BUILD_TESTING)
+  # EN: Verify that state changes invalidate safe draw-batch binding reuse.
+  # PT-BR: Garanta atualizacao de estados ao trocar pipeline/blend/pass.
+  add_executable(pgr1_vk_draw_bind_state_test test_draw_bind_state.cpp)
+  target_compile_options(pgr1_vk_draw_bind_state_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME vk_draw_state_reuse COMMAND pgr1_vk_draw_bind_state_test)
   # EN: Verify real concurrent shader jobs without a Vulkan device.
   # PT-BR: Teste jobs de shader paralelos sem exigir uma GPU.
   find_package(Threads REQUIRED)

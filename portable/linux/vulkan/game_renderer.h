@@ -18,6 +18,9 @@ public:
         // Dynamic reflection-cube cache diagnostics, per submitted batch.
         std::uint64_t cube_cache_creates=0, cube_cache_hits=0, cube_face_copies=0;
         std::uint64_t render_passes=0, batched_groups=0, batched_draws=0;
+        // EN: Vulkan draw-state calls avoided inside unchanged render passes.
+        // PT-BR: Comandos de estado Vulkan poupados no mesmo render pass.
+        std::uint64_t pipeline_bind_skips=0, viewport_set_skips=0, blend_set_skips=0;
         bool presented=false;
         bool acquire_timeout=false;
         std::vector<GpuSample> gpu_samples;

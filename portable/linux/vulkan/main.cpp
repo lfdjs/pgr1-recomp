@@ -231,8 +231,8 @@ int main(int argc, char** argv) {
     const double seconds=std::getenv("PGR1_RUN_SECONDS")?std::atof(std::getenv("PGR1_RUN_SECONDS")):0;
     auto ms=[](auto duration) { return std::chrono::duration<double,std::milli>(duration).count(); };
     std::ofstream timings("frames.csv"),submissions("submissions.csv"),gpu_times("gpu.csv");
-    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,texture_cache_entries_peak\n";
-    submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,texture_cache_entries_peak\n";
+    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,texture_cache_entries_peak,vk_pipeline_bind_skips,vk_viewport_set_skips,vk_blend_set_skips\n";
+    submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,texture_cache_entries_peak,vk_pipeline_bind_skips,vk_viewport_set_skips,vk_blend_set_skips\n";
     gpu_times<<"frame,gpu_ms\n";
     std::ofstream batch_log("vk_batches.csv");
     // EN: One guest frame may generate many submissions (offscreen/fences).
@@ -246,6 +246,7 @@ int main(int argc, char** argv) {
     std::uint64_t staging_allocations=0,staging_reuses=0,descriptor_creates=0,
                   descriptor_resets=0,framebuffer_hits=0,framebuffer_creates=0;
     std::uint64_t cube_creates=0,cube_hits=0,cube_copies=0;
+    std::uint64_t pipeline_skips=0,viewport_skips=0,blend_skips=0;
     int output_width=0,output_height=0;
     bool captured_frame=false;
     while (running && !boot_failed.load()) {
@@ -327,7 +328,8 @@ int main(int argc, char** argv) {
                 <<next.texture_mip_levels_decoded<<','<<next.texture_mip_levels_reused<<','
                 <<next.texture_cache_evictions<<','<<next.texture_cache_misses<<','
                 <<next.texture_descriptor_redecodes<<','<<next.texture_guest_redecodes<<','
-                <<next.texture_cache_entries_peak<<'\n';
+                <<next.texture_cache_entries_peak<<','<<stats.pipeline_bind_skips<<','
+                <<stats.viewport_set_skips<<','<<stats.blend_set_skips<<'\n';
             pending.draw_ns+=next.draw_ns; pending.decode_ns+=next.decode_ns;
             pending.texture_check_ns+=next.texture_check_ns; pending.assemble_ns+=next.assemble_ns;
             pending.texture_static_binds+=next.texture_static_binds;
@@ -348,6 +350,9 @@ int main(int argc, char** argv) {
             pending.max_draw_ns=std::max(pending.max_draw_ns,next.max_draw_ns);
             pending.queue_wait_ns+=next.queue_wait_ns; pending.supported+=next.supported;
             pending.rejected_draws+=next.rejected_draws;
+            pipeline_skips+=stats.pipeline_bind_skips;
+            viewport_skips+=stats.viewport_set_skips;
+            blend_skips+=stats.blend_set_skips;
             execute_ms+=stats.execute_ms; shader_ms+=stats.shader_ms; fence_ms+=stats.fence_ms;
             acquire_ms+=stats.acquire_ms; present_ms+=stats.present_ms; gpu_ms+=completed_gpu_ms;
             accepted+=stats.accepted; rejected+=stats.rejected; indexed+=stats.indexed; nonindexed+=stats.nonindexed;
@@ -372,7 +377,8 @@ int main(int argc, char** argv) {
                     <<pending.texture_mip_levels_decoded<<','<<pending.texture_mip_levels_reused<<','
                     <<pending.texture_cache_evictions<<','<<pending.texture_cache_misses<<','
                     <<pending.texture_descriptor_redecodes<<','<<pending.texture_guest_redecodes<<','
-                    <<pending.texture_cache_entries_peak<<'\n';
+                    <<pending.texture_cache_entries_peak<<','<<pipeline_skips<<','
+                    <<viewport_skips<<','<<blend_skips<<'\n';
                 if (stats.presented) ++total_frames;
                 last_frame=at; last_cpu=cpu; pending={};
                 execute_ms=shader_ms=fence_ms=acquire_ms=present_ms=gpu_ms=0;
@@ -380,6 +386,7 @@ int main(int argc, char** argv) {
                 staging_allocations=staging_reuses=descriptor_creates=descriptor_resets=0;
                 framebuffer_hits=framebuffer_creates=0;
                 cube_creates=cube_hits=cube_copies=0;
+                pipeline_skips=viewport_skips=blend_skips=0;
             }
             if (!render_ok) { boot_failed=true; break; }
             if (!next.reference_pixels.empty()) renderer->Compare(next);

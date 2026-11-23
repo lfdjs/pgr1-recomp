@@ -19,6 +19,10 @@ desenvolvimento. O port ainda precisa de testes comparáveis em Londres e
 na RTX 3060 Ti. Informações históricas não devem ser tratadas como validação
 do código mais recente.
 
+[Otimizações recentes do pipeline Vulkan](14-sobreposicao-cpu-gpu.md):
+sobreposicao CPU/GPU, [compilacao paralela](15-compilacao-paralela-shaders.md)
+e [reutilizacao de estados](16-estados-vulkan.md).
+
 [Seleção automática de GPU Vulkan (RX 580 / RTX 3060 Ti)](13-selecao-automatica-gpu.md):
 basta executar `bash scripts/portable-vulkan.sh run-game` nas duas máquinas.
 O Vulkan seleciona uma GPU dedicada compatível e registra o nome no log.
@@ -38,6 +42,9 @@ Vulkan. Start with the [04C native runtime](07-vulkan-native-game.md), the
 [CPU texture capture report](09-cpu-texture-capture.md), and the
 [latest RX 580 performance audit](10-auditoria-performance-2026-11-22.md)
 and the [texture cache experiment](11-cache-texturas-04d9.md).
+Recent optimizations include [CPU/GPU overlap](14-sobreposicao-cpu-gpu.md),
+[parallel SPIR-V shader compilation](15-compilacao-paralela-shaders.md) and
+[Vulkan draw-state reuse](16-estados-vulkan.md).
 [Automatic Vulkan GPU selection](13-selecao-automatica-gpu.md) allows
 `bash scripts/portable-vulkan.sh run-game` on either AMD or NVIDIA
 without a vendor-specific environment variable.

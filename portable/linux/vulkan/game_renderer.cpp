@@ -5,6 +5,7 @@
 #include "quality_state.h"
 #include "present_counter.h"
 #include "gpu_completion_policy.h"
+#include "draw_bind_state.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
@@ -1026,6 +1027,9 @@ struct Renderer::Impl {
         };
         size_t batch_start=0,batch_end=0;
         std::vector<std::pair<VkPipeline,VkDescriptorSet>> batch_prepared;
+        // EN: Vulkan state is retained inside one contiguous render pass.
+        // PT-BR: O estado Vulkan permanece valido dentro do mesmo render pass.
+        performance::BatchBindingCache<VkPipeline> bind_cache;
         for(size_t i=0;i<frame.commands.size();i++) {
             auto& c=frame.commands[i];
             if(c.kind==Command::Kind::Readback) { auto image=TargetImage(c.target,c.read_depth); Readback(image,c.readback); continue; }
@@ -1104,10 +1108,24 @@ struct Renderer::Impl {
                 }
                 BeginTarget(c);
             }
-            vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline);
+            // EN: Rebind on new render passes or a pipeline change. Otherwise
+            // skip identical dynamic state calls within a safe static batch.
+            // PT-BR: Reaplique em novos passes ou ao trocar o pipeline;
+            // evite comandos redundantes em grupos de draws estaticos.
+            const auto binds=bind_cache.Next(batched && i>batch_start,pipeline,c.pipeline.blend_color);
+            if(binds.pipeline)vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline);
+            else ++stats.pipeline_bind_skips;
             const auto image_extent=colors.at(c.target.color);
-            VkViewport viewport{0,0,float(image_extent->w),float(image_extent->h),0,1}; vkCmdSetViewport(cmd,0,1,&viewport);
-            const auto& p=c.pipeline; float blend[4]={Channel(p.blend_color,16),Channel(p.blend_color,8),Channel(p.blend_color,0),Channel(p.blend_color,24)}; vkCmdSetBlendConstants(cmd,blend);
+            if(binds.viewport) {
+                VkViewport viewport{0,0,float(image_extent->w),float(image_extent->h),0,1};
+                vkCmdSetViewport(cmd,0,1,&viewport);
+            } else ++stats.viewport_set_skips;
+            const auto& p=c.pipeline;
+            if(binds.blend) {
+                float blend[4]={Channel(p.blend_color,16),Channel(p.blend_color,8),
+                    Channel(p.blend_color,0),Channel(p.blend_color,24)};
+                vkCmdSetBlendConstants(cmd,blend);
+            } else ++stats.blend_set_skips;
             vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,&set,0,nullptr);
             vkCmdBindVertexBuffers(cmd,0,1,&staged->buffer,&offsets[i].vertex);
             if(!c.indices.empty())vkCmdBindIndexBuffer(cmd,staged->buffer,offsets[i].index,VK_INDEX_TYPE_UINT32);
