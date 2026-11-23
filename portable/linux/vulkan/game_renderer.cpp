@@ -4,6 +4,7 @@
 #include "vk_postfx.h"
 #include "quality_state.h"
 #include "present_counter.h"
+#include "gpu_completion_policy.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
@@ -111,6 +112,10 @@ struct Renderer::Impl {
     VkCommandBuffer cmd=VK_NULL_HANDLE;
     VkFence fence=VK_NULL_HANDLE;
     bool pending=false,resize=true;
+    // EN: Async GPU completion avoids blocking the producer on every submission.
+    // PT-BR: Conclusão assíncrona evita bloquear o produtor a cada submissão.
+    const bool async_completion=performance::AsynchronousGpuCompletion(
+        std::getenv("PGR1_VK_PIPELINED"));
     bool applied_vsync=true;
     float output_aspect=0;
     unsigned screen_w=0,screen_h=0;
@@ -215,6 +220,8 @@ struct Renderer::Impl {
         if(instance) vkDestroyInstance(instance,nullptr);
     }
     void Init() {
+        std::printf("PGR1 Vulkan GPU completion / Conclusao da GPU: %s (PGR1_VK_PIPELINED)\n",
+                    async_completion ? "pipelined / sobreposta" : "synchronous / sincrona");
         internal_percent=quality::render_percent.load(std::memory_order_relaxed);
         std::printf("PGR1 Vulkan internal resolution: %s (%u%% of SDL output when enabled)\n",
             internal_percent ? "experimental screen-matched" : "guest/native-Xbox",internal_percent);
@@ -1139,9 +1146,13 @@ struct Renderer::Impl {
         }
         pending_completion=frame.completion;
         Submit(present,image_index,frame.frame);
-        // Fence/Busy polling on the producer must make progress even if this is
-        // the final prefix and no subsequent submission arrives to drain it.
-        if(pending_completion)Wait();
+        // EN: GPU execution may overlap the next guest capture. Completion
+        // promises are drained by the next Render(), idle PollCompletion(),
+        // and Finish(). Readback/visibility queries still wait in Submit().
+        // PT-BR: A GPU pode trabalhar enquanto o jogo captura os proximos draws.
+        // As promessas concluem no proximo Render(), na sondagem ociosa ou no
+        // Finish(). Leituras/consultas obrigatorias ainda esperam em Submit().
+        if(pending_completion && !async_completion)Wait();
         stats.presented_fps=present_counter.Fps();stats.presented_frame_ms=present_counter.FrameMs();
         stats.cpu_ms=Millis(total); return true;
     }
@@ -1157,6 +1168,22 @@ bool Renderer::Render(Submission& frame) {
         impl_->pending_completion.reset();
         Fail(std::string("native Vulkan: ")+e.what()); std::fprintf(stderr,"native Vulkan failed: %s\n",e.what()); return false;
     }
+}
+bool Renderer::PollCompletion() {
+    auto& g=*impl_;
+    if(!g.pending)return false;
+    // EN: Poll on the owning SDL/Vulkan thread only; do not wait if GPU is busy.
+    // PT-BR: Consulte apenas na thread dona do Vulkan, sem bloquear a GPU ocupada.
+    const VkResult status=vkGetFenceStatus(g.device,g.fence);
+    if(status==VK_NOT_READY)return false;
+    Check(status,"poll Vulkan GPU fence");
+    // EN: These samples belong to an idle completion, not the previous
+    // already-reported submission. The main loop records them once.
+    // PT-BR: Estas amostras sao de uma conclusao ociosa, nao da submissao
+    // anterior ja registrada; o loop principal as registra uma unica vez.
+    g.stats.gpu_samples.clear();
+    g.Wait(); // Completes pending SDK resource promises / conclui promessas do SDK.
+    return true;
 }
 void Renderer::Resize(){impl_->resize=true;}
 void Renderer::SetAspect(float aspect){impl_->output_aspect=std::isfinite(aspect) && aspect>0?aspect:0;}

@@ -27,6 +27,10 @@ public:
     Renderer(const Renderer&)=delete;
     Renderer& operator=(const Renderer&)=delete;
     bool Render(gldirect::Submission& frame);
+    // EN: Nonblocking fence check on the owning Vulkan thread; resolves the
+    // producer completion token even when there is no subsequent submission.
+    // PT-BR: Consulta sem bloqueio que conclui promessas mesmo sem novo frame.
+    bool PollCompletion();
     void Resize();
     void SetAspect(float aspect);
     // Captures the same display-space FXAA/sharpen pipeline, including offscreen tests.

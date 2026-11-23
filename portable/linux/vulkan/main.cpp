@@ -388,7 +388,23 @@ int main(int argc, char** argv) {
                 std::printf("Vulkan exact guest frame %llu capture %s: %s\n",
                     static_cast<unsigned long long>(capture_frame),capture_frame_path,captured_frame?"saved":"failed");
             }
-        } else SDL_Delay(1);
+        } else {
+            // EN: The guest can be waiting for a fence without submitting more
+            // work. Poll the pending GPU fence so that its resource token
+            // completes without forcing a synchronous wait after every draw.
+            // PT-BR: O jogo pode aguardar uma fence sem gerar novos comandos;
+            // a sondagem conclui o token sem travar a thread a cada submissao.
+            try {
+                if(renderer->PollCompletion()) {
+                    for(const auto& sample:renderer->LastStats().gpu_samples)
+                        gpu_times<<sample.frame<<','<<sample.milliseconds<<'\n';
+                }
+            } catch(const std::exception& ex) {
+                std::fprintf(stderr,"Vulkan GPU completion poll failed: %s\n",ex.what());
+                pgr::gldirect::Fail(ex.what()); boot_failed=true; break;
+            }
+            SDL_Delay(1);
+        }
         if (now>=next_title) {
             timings.flush(); submissions.flush(); gpu_times.flush(); logx::Flush();
             if (fs::is_regular_file("snap")) {

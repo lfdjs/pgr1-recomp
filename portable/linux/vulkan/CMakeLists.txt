@@ -74,6 +74,11 @@ if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/xdk/dsound.cpp")
 endif()
 
 if(BUILD_TESTING)
+  # EN: Validate synchronous fallback and pipelining controls without a GPU.
+  # PT-BR: Valide fallback sincrono e controle do paralelismo sem uma GPU.
+  add_executable(pgr1_vk_gpu_completion_policy_test test_gpu_completion_policy.cpp)
+  target_compile_options(pgr1_vk_gpu_completion_policy_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME vk_async_gpu_completion_policy COMMAND pgr1_vk_gpu_completion_policy_test)
   # EN: Hardware-independent tests for automatic and manual Vulkan GPU choice.
   # PT-BR: Testes sem GPU para a seleção Vulkan automática e manual.
   add_executable(pgr1_vk_device_selection_test test_device_selection.cpp)
