@@ -74,6 +74,11 @@ if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/xdk/dsound.cpp")
 endif()
 
 if(BUILD_TESTING)
+  # EN: Hardware-independent tests for automatic and manual Vulkan GPU choice.
+  # PT-BR: Testes sem GPU para a seleção Vulkan automática e manual.
+  add_executable(pgr1_vk_device_selection_test test_device_selection.cpp)
+  target_compile_options(pgr1_vk_device_selection_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME vk_auto_gpu_selection COMMAND pgr1_vk_device_selection_test)
   add_executable(pgr1_texture_key_test ../gldirect/tests/test_texture_snapshot_key.cpp)
   target_include_directories(pgr1_texture_key_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect")
   target_compile_options(pgr1_texture_key_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)

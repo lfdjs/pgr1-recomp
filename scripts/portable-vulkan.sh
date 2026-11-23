@@ -37,7 +37,7 @@ build_game() {
 }
 
 run_game() {
-  local digest recorded=''
+  local digest recorded='' gpu_choice="${PGR1_VK_DEVICE:-auto}"
   region >/dev/null
   digest="$(sha1sum assets/default.xbe | cut -d' ' -f1)"
   [[ ! -f "$OUT/game-xbe.sha1" ]] || recorded="$(cat "$OUT/game-xbe.sha1")"
@@ -55,6 +55,15 @@ run_game() {
     cd "$RUN"
     echo 'Backend: native Vulkan (SDK NV2A -> HLSL -> SPIR-V, real recompiled PGR1)'
     echo "Run directory: $RUN"
+    # EN: Display the selection mode; the Vulkan backend identifies the real
+    # compatible GPU after checking device and presentation capabilities.
+    # PT-BR: Informe o modo; o backend Vulkan confirma a GPU compatível
+    # após verificar as capacidades de renderização e apresentação.
+    if [[ "${gpu_choice,,}" == "auto" ]]; then
+      echo "GPU Vulkan / Placa de vídeo: automática (preferir GPU dedicada compatível)"
+    else
+      echo "GPU Vulkan / Placa de vídeo: seleção manual: $gpu_choice"
+    fi
     # Leave the saved menu cap effective unless an explicit diagnostic override
     # is requested. FPS itself is also accepted for existing harness workflows.
     if [[ -n "${PGR1_FPS+x}" ]]; then
@@ -72,6 +81,9 @@ case "${1:-help}" in
     done
     if [[ -e /usr/include/vulkan/vulkan.h ]]; then echo 'Vulkan headers: system installed';
     else echo 'Vulkan headers: check CMake Vulkan::Headers detection'; fi
+    # EN: Lists ICD-visible GPUs; actual compatibility is checked by Vulkan.
+    # PT-BR: Lista GPUs visíveis ao ICD; o Vulkan valida a compatibilidade real.
+    echo 'GPU mode / Modo de GPU: automatic by default; PGR1_VK_DEVICE=auto or manual substring'
     command -v vulkaninfo >/dev/null && vulkaninfo --summary || true
     ;;
   build)
@@ -104,12 +116,18 @@ PGR1 04C — NATIVE VULKAN GAME + INDEPENDENT FIXTURE TESTS
   bash scripts/portable-vulkan.sh test                    # geometry, capture and optional SDK/Vulkan pixel tests
   bash scripts/portable-vulkan.sh draw-test --frames 180  # native Vulkan GPU vertex/index draw
   bash scripts/portable-vulkan.sh build-game             # recompiled Xbox game + native Vulkan
-  PGR1_VK_DEVICE='RX 580' bash scripts/portable-vulkan.sh run-game
-  PGR1_VK_DEVICE='RTX 3060 Ti' bash scripts/portable-vulkan.sh run-game
+  bash scripts/portable-vulkan.sh run-game               # automatic compatible GPU (default)
+  PGR1_VK_DEVICE=auto bash scripts/portable-vulkan.sh run-game  # explicit automatic mode
+  PGR1_VK_DEVICE='RX 580' bash scripts/portable-vulkan.sh run-game # optional manual GPU
+  PGR1_VK_DEVICE='RTX 3060 Ti' bash scripts/portable-vulkan.sh run-game # optional manual GPU
   bash scripts/portable-vulkan.sh triage .local/run/linux
 Requires: SDL3 >=3.2, Vulkan loader/headers, glslangValidator, GPU Vulkan ICD.
 build-game additionally requires the pinned SDK, supported assets/default.xbe and compiler tools.
-PGR1_VK_DEVICE='RX 580' selects AMD RX 580, when available. Otherwise prefers discrete GPU.
+EN: Unset/empty PGR1_VK_DEVICE or 'auto' (case insensitive) chooses a compatible
+    graphics+present GPU, prioritizing a discrete GPU (RTX/Radeon, etc.).
+PT-BR: Sem PGR1_VK_DEVICE ou com 'auto', o Vulkan procura uma GPU compatível,
+       preferindo placa dedicada; nomes explícitos continuam disponíveis.
+Manual overrides match part of a Vulkan device name (case insensitive).
 IMPORTANT: draw-test displays a generated geometry FIXTURE, not an actual PGR1 race.
 IMPORTANT: scripts/portable-linux.sh run-vulkan uses Zink (OpenGL over Vulkan).
 run-game executes the game; acceptance still requires reviewing its draw counters and images.

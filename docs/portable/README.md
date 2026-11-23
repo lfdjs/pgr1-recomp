@@ -19,6 +19,10 @@ desenvolvimento. O port ainda precisa de testes comparáveis em Londres e
 na RTX 3060 Ti. Informações históricas não devem ser tratadas como validação
 do código mais recente.
 
+[Seleção automática de GPU Vulkan (RX 580 / RTX 3060 Ti)](13-selecao-automatica-gpu.md):
+basta executar `bash scripts/portable-vulkan.sh run-game` nas duas máquinas.
+O Vulkan seleciona uma GPU dedicada compatível e registra o nome no log.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.
@@ -34,6 +38,9 @@ Vulkan. Start with the [04C native runtime](07-vulkan-native-game.md), the
 [CPU texture capture report](09-cpu-texture-capture.md), and the
 [latest RX 580 performance audit](10-auditoria-performance-2026-11-22.md)
 and the [texture cache experiment](11-cache-texturas-04d9.md).
+[Automatic Vulkan GPU selection](13-selecao-automatica-gpu.md) allows
+`bash scripts/portable-vulkan.sh run-game` on either AMD or NVIDIA
+without a vendor-specific environment variable.
 The engine-audio routing regression is resolved; the native Vulkan CPU texture cache now defaults to 1,024 entries after an A/B test exposed eviction thrashing. Full 30/60 FPS stability,
 fast MSAA and RTX 3060 Ti validation remain open.
 

@@ -31,7 +31,7 @@ Não há atualização do submódulo SDK nem exigência de revisão indisponíve
 bash scripts/portable-vulkan.sh build
 bash scripts/portable-vulkan.sh test
 JOBS=4 bash scripts/portable-vulkan.sh build-game
-PGR1_VK_DEVICE='RX 580' bash scripts/portable-vulkan.sh run-game
+bash scripts/portable-vulkan.sh run-game  # seleção automática / automatic selection
 ```
 
 Na outra máquina:
@@ -39,12 +39,23 @@ Na outra máquina:
 ```sh
 JOBS=4 bash scripts/portable-vulkan.sh build-game
 bash scripts/portable-vulkan.sh test
-PGR1_VK_DEVICE='RTX 3060 Ti' bash scripts/portable-vulkan.sh run-game
+bash scripts/portable-vulkan.sh run-game  # seleção automática da RTX 3060 Ti
 ```
 
-`PGR1_VK_DEVICE` seleciona uma parte do nome sem distinguir maiúsculas de
-minúsculas. Um nome ausente provoca erro, permitindo identificar a GPU realmente
-testada. O log imprime o dispositivo escolhido. Os comandos `smoke`, `draw-test`
+Sem definir `PGR1_VK_DEVICE`, o Vulkan **detecta automaticamente** uma GPU
+com fila gráfica e suporte a apresentação/swapchain, preferindo placas dedicadas.
+O valor `PGR1_VK_DEVICE=auto` (sem distinguir maiúsculas de minúsculas)
+tem o mesmo efeito. Um nome explícito, como `PGR1_VK_DEVICE="RTX 3060 Ti"`,
+continua selecionando parte do nome sem distinguir maiúsculas de minúsculas.
+Nesse caso, se não houver dispositivo compatível correspondente, ocorre erro.
+O log informa o modo de seleção e o nome efetivo da GPU. Consulte
+[seleção automática de GPU](13-selecao-automatica-gpu.md).
+
+**English:** Without `PGR1_VK_DEVICE`, the Vulkan backend automatically
+chooses a compatible graphics+present/swapchain device, preferring discrete
+GPUs. `PGR1_VK_DEVICE=auto` (case-insensitive) explicitly requests the same
+behavior; a manual case-insensitive partial name is still supported.
+The selected GPU is printed in the runtime log. Os comandos `smoke`, `draw-test`
 e `test` preservam suas interfaces. `draw-test` continua desenhando um fixture;
 seus números não são desempenho de PGR1. `scripts/portable-linux.sh run-vulkan`
 continua significando OpenGL sobre Zink.

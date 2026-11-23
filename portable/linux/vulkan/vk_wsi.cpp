@@ -6,6 +6,7 @@
 #include <vulkan/vulkan.h>
 #include "vk_geometry.h"
 #include "vk_guest_frame.h"
+#include "device_selection.h"
 
 #include <algorithm>
 #include <array>
@@ -111,18 +112,19 @@ public:
         // Prefer discrete GPUs, but a working graphics+present queue is mandatory.
         int best = -1;
         const char* preferred = std::getenv("PGR1_VK_DEVICE");
+        const bool automatic = pgr::vulkan::device::Automatic(preferred);
         bool preferred_found = false;
+        // EN: Use the same automatic/manual selection rules as the real game.
+        // PT-BR: Use as mesmas regras de seleção automática/manual do jogo.
+        std::printf("PGR1 Vulkan GPU selection / Seleção da GPU: %s%s\n",
+                    automatic ? "auto (compatible discrete preferred)" : "manual: ",
+                    automatic ? "" : preferred);
         for (auto candidate : gpus) {
             if (!SupportsSwapchain(candidate)) continue;
             VkPhysicalDeviceProperties props{};
             vkGetPhysicalDeviceProperties(candidate, &props);
-            if (preferred && *preferred) {
-                std::string gpu_name = props.deviceName, match = preferred;
-                for (char& c : gpu_name) c = char(std::tolower(static_cast<unsigned char>(c)));
-                for (char& c : match) c = char(std::tolower(static_cast<unsigned char>(c)));
-                if (gpu_name.find(match) == std::string::npos) continue;
-                preferred_found = true;
-            }
+            if (!pgr::vulkan::device::MatchesName(props.deviceName, preferred)) continue;
+            if (!automatic) preferred_found = true;
             std::uint32_t count = 0;
             vkGetPhysicalDeviceQueueFamilyProperties(candidate, &count, nullptr);
             std::vector<VkQueueFamilyProperties> families(count);
@@ -143,7 +145,7 @@ public:
             }
         }
         if (!gpu) {
-            if (preferred && *preferred && !preferred_found)
+            if (!automatic && !preferred_found)
                 throw std::runtime_error(std::string("Vulkan GPU requested but not found: ") + preferred);
             throw std::runtime_error("No Vulkan GPU with graphics/present queue and swapchain support");
         }

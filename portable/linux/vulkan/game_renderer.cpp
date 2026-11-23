@@ -1,5 +1,6 @@
 #include "game_renderer.h"
 #include "draw_batch.h"
+#include "device_selection.h"
 #include "vk_postfx.h"
 #include "quality_state.h"
 #include "present_counter.h"
@@ -232,12 +233,17 @@ struct Renderer::Impl {
         uint32_t n=0; Check(vkEnumeratePhysicalDevices(instance,&n,nullptr),"physical device count");
         std::vector<VkPhysicalDevice> devices(n); Check(vkEnumeratePhysicalDevices(instance,&n,devices.data()),"physical devices");
         int best=-1; const char* requested=std::getenv("PGR1_VK_DEVICE");
+        const bool automatic=device::Automatic(requested);
+        // EN: Vulkan checks graphics, presentation and swapchain support before
+        // preferring a discrete GPU. No vendor name or PCI guess is required.
+        // PT-BR: Vulkan verifica suporte a gráficos/apresentação/swapchain
+        // antes de priorizar GPU dedicada; não há nomes fixos de fabricantes.
+        std::printf("PGR1 Vulkan GPU selection / Seleção da GPU: %s%s\n",
+                    automatic?"auto (compatible discrete preferred)":"manual: ",
+                    automatic?"":requested);
         for(auto candidate:devices) {
             VkPhysicalDeviceProperties p{}; vkGetPhysicalDeviceProperties(candidate,&p);
-            std::string name=p.deviceName,match=requested?requested:"";
-            for(auto& c:name)c=char(std::tolower(static_cast<unsigned char>(c)));
-            for(auto& c:match)c=char(std::tolower(static_cast<unsigned char>(c)));
-            if(!match.empty() && name.find(match)==std::string::npos) continue;
+            if(!device::MatchesName(p.deviceName,requested)) continue;
             if(surface) {
                 uint32_t ne=0; Check(vkEnumerateDeviceExtensionProperties(candidate,nullptr,&ne,nullptr),"extension count");
                 std::vector<VkExtensionProperties> ex(ne); Check(vkEnumerateDeviceExtensionProperties(candidate,nullptr,&ne,ex.data()),"device extensions");
@@ -258,7 +264,7 @@ struct Renderer::Impl {
                 if(score>best) { best=score; gpu=candidate; family=i; properties=p; timestamp_bits=families[i].timestampValidBits; }
             }
         }
-        if(!gpu)throw std::runtime_error(std::string("No compatible Vulkan graphics/present GPU for PGR1_VK_DEVICE=")+(requested?requested:"auto"));
+        if(!gpu)throw std::runtime_error(std::string("No compatible Vulkan graphics/present GPU for PGR1_VK_DEVICE=")+(automatic?"auto":requested));
         VkPhysicalDeviceFeatures available{}; vkGetPhysicalDeviceFeatures(gpu,&available);
         features.fillModeNonSolid=available.fillModeNonSolid;
         features.samplerAnisotropy=available.samplerAnisotropy;
