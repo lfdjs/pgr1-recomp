@@ -14,6 +14,9 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <cstdlib>
+#include "shader_worker_policy.h"
+#include "shader_pair_pool.h"
 #include <spawn.h>
 #include <sys/wait.h>
 #include <sys/file.h>
@@ -146,37 +149,21 @@ std::string CompileHlslSpirv(const std::string& source, bool vertex) {
 std::shared_future<std::array<std::string,2>> CompileHlslPairSpirvAsync(std::string vertex, std::string fragment) {
     // Generation stays on the SDK thread; only immutable HLSL crosses to this
     // worker. No process launch/compiler wait occurs on the guest draw path.
-    struct Worker {
-        using Task=std::packaged_task<std::array<std::string,2>()>;
-        std::mutex mutex;
-        std::condition_variable available;
-        std::deque<Task> tasks;
-        bool stopping=false;
-        std::thread thread;
-        Worker():thread([this] {
-            for(;;) {
-                Task task;
-                {
-                    std::unique_lock lock(mutex);
-                    available.wait(lock,[this] { return stopping || !tasks.empty(); });
-                    if(stopping) return;
-                    task=std::move(tasks.front()); tasks.pop_front();
-                }
-                task(); // packaged_task preserves diagnostic exceptions for consumer.
-            }
-        }) {}
-        ~Worker() {
-            { std::lock_guard lock(mutex); stopping=true; tasks.clear(); }
-            available.notify_all(); thread.join();
+    // EN: Compile independent immutable HLSL pairs in parallel. Keep the
+    // per-shader disk file lock and leave CPU capacity for game simulation.
+    // PT-BR: Compile pares de HLSL imutaveis em paralelo, mantendo o lock
+    // de cada shader e reservando nucleos para a simulacao do jogo.
+    struct Workers {
+        ShaderPairPool pool;
+        Workers():pool(ShaderWorkerCount(
+            std::thread::hardware_concurrency(),std::getenv("PGR1_VK_SHADER_WORKERS"))) {
+            std::fprintf(stderr,"Vulkan shader workers / Threads de shaders: %u\n",pool.ThreadCount());
         }
     };
-    static Worker worker;
-    Worker::Task task([v=std::move(vertex),p=std::move(fragment)] {
-        return std::array<std::string,2>{CompileHlslSpirv(v,true),CompileHlslSpirv(p,false)};
+    static Workers workers;
+    ShaderPairPool::Task job([v=std::move(vertex),p=std::move(fragment)] {
+        return ShaderPairPool::Result{CompileHlslSpirv(v,true),CompileHlslSpirv(p,false)};
     });
-    auto future=task.get_future().share();
-    { std::lock_guard lock(worker.mutex); worker.tasks.push_back(std::move(task)); }
-    worker.available.notify_one();
-    return future;
+    return workers.pool.Enqueue(std::move(job));
 }
 }

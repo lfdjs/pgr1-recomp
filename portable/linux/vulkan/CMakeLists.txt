@@ -74,6 +74,18 @@ if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/xdk/dsound.cpp")
 endif()
 
 if(BUILD_TESTING)
+  # EN: Verify real concurrent shader jobs without a Vulkan device.
+  # PT-BR: Teste jobs de shader paralelos sem exigir uma GPU.
+  find_package(Threads REQUIRED)
+  add_executable(pgr1_vk_shader_pool_test ../gldirect/tests/test_shader_pair_pool.cpp)
+  target_include_directories(pgr1_vk_shader_pool_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect")
+  target_link_libraries(pgr1_vk_shader_pool_test PRIVATE Threads::Threads)
+  target_compile_options(pgr1_vk_shader_pool_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME vk_multicore_shader_pool COMMAND pgr1_vk_shader_pool_test)
+  add_executable(pgr1_vk_shader_policy_test ../gldirect/tests/test_shader_worker_policy.cpp)
+  target_include_directories(pgr1_vk_shader_policy_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect")
+  target_compile_options(pgr1_vk_shader_policy_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME vk_shader_worker_policy COMMAND pgr1_vk_shader_policy_test)
   # EN: Validate synchronous fallback and pipelining controls without a GPU.
   # PT-BR: Valide fallback sincrono e controle do paralelismo sem uma GPU.
   add_executable(pgr1_vk_gpu_completion_policy_test test_gpu_completion_policy.cpp)

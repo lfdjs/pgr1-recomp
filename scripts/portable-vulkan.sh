@@ -135,6 +135,7 @@ Run options: PGR1_RUN_SECONDS=60 OUTPUT=1280x720 PGR1_FULLSCREEN=0 PGR1_CAPTURE=
              SCRIPT=/absolute/input-script.txt PGR1_SCRIPT_ONLY=1 PGR1_VK_RUN_DIR=/path/to/run
              PGR1_CAPTURE_FRAME=300 PGR1_CAPTURE_FRAME_PATH=capture-frame.ppm
              PGR1_VK_PIPELINED=0 # diagnostic: restore per-submission GPU fence wait
+             PGR1_VK_SHADER_WORKERS=1 # diagnostic: single shader worker
              # PT-BR: 0 restaura a espera sincrona em cada submissao
              PGR1_COMPARE_FRAME=300 # optional CPU reference and Vulkan images/error report
 Every submission and requested frame is logged to submissions.csv and frames.csv, including rejected draws.
