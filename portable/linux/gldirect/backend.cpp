@@ -59,7 +59,15 @@ class GLBackend final : public Backend {
     Submission frame_;
 #ifdef PGR1_NATIVE_VULKAN
     std::shared_future<void> current_completion_;
-    std::map<uint32_t,std::shared_future<void>> fences_, resource_use_;
+    std::map<uint32_t,std::shared_future<void>> fences_;
+    struct ResourceUse {
+        uint64_t generation=0;
+        std::shared_future<void> completion;
+    };
+    // EN: A resource only needs one reference to the current prefix token.
+    // PT-BR: Cada recurso precisa de apenas uma referência ao token do prefixo.
+    std::unordered_map<uint32_t,ResourceUse> resource_use_;
+    uint64_t resource_generation_=1;
     std::vector<std::shared_future<uint64_t>> counted_;
     uint32_t next_fence_=0;
     std::shared_future<void> Completion() {
@@ -69,7 +77,14 @@ class GLBackend final : public Backend {
         }
         return current_completion_;
     }
-    void Use(uint32_t header) { if(header) resource_use_[header]=Completion(); }
+    void Use(uint32_t header) {
+        if(!header)return;
+        auto& use=resource_use_[header];
+        if(use.generation!=resource_generation_) {
+            use.completion=Completion();
+            use.generation=resource_generation_;
+        }
+    }
     void UseDraw(const State& s) {
         Use(s.rt.header); Use(s.zs.header); Use(s.index_buffer);
         for(auto texture:s.textures) Use(texture);
@@ -96,6 +111,7 @@ class GLBackend final : public Backend {
         Submit(std::move(frame_)); frame_={};
 #ifdef PGR1_NATIVE_VULKAN
         current_completion_={};
+        ++resource_generation_;
 #endif
     }
     std::set<const char*> warned_;
@@ -607,13 +623,13 @@ public:
         if(found==resource_use_.end()) return false;
         // A guest polling IsBusy must let the recorded prefix reach the device.
         Flush();
-        if(Pending(found->second)) return true;
+        if(Pending(found->second.completion)) return true;
         resource_use_.erase(found); return false;
     }
     void WaitResource(uint32_t resource) override {
         const auto found=resource_use_.find(resource);
         if(found==resource_use_.end()) return;
-        Flush(); WaitCompletion(found->second); resource_use_.erase(found);
+        Flush(); WaitCompletion(found->second.completion); resource_use_.erase(found);
     }
     void ClearReport() override { counted_.clear(); }
 #endif

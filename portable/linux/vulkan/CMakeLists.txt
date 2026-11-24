@@ -88,6 +88,11 @@ if(BUILD_TESTING)
   # EN: Verify real concurrent shader jobs without a Vulkan device.
   # PT-BR: Teste jobs de shader paralelos sem exigir uma GPU.
   find_package(Threads REQUIRED)
+  # EN/PT-BR: Queue wake-up and bounded idle polling / Notificação e espera limitada.
+  add_executable(pgr1_vk_queue_test ../gldirect/tests/test_submission_queue.cpp ../gldirect/commands.cpp)
+  target_link_libraries(pgr1_vk_queue_test PRIVATE Threads::Threads)
+  target_compile_options(pgr1_vk_queue_test PRIVATE -UNDEBUG)
+  add_test(NAME vk_submission_queue_wakeup COMMAND pgr1_vk_queue_test)
   add_executable(pgr1_vk_shader_pool_test ../gldirect/tests/test_shader_pair_pool.cpp)
   target_include_directories(pgr1_vk_shader_pool_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect")
   target_link_libraries(pgr1_vk_shader_pool_test PRIVATE Threads::Threads)

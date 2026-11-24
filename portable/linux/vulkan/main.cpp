@@ -410,7 +410,9 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr,"Vulkan GPU completion poll failed: %s\n",ex.what());
                 pgr::gldirect::Fail(ex.what()); boot_failed=true; break;
             }
-            SDL_Delay(1);
+            // EN: Wake immediately on a submission; still poll fences regularly.
+            // PT-BR: Acorde ao receber submissões; consulte fences periodicamente.
+            pgr::gldirect::WaitForWork(std::chrono::milliseconds(1));
         }
         if (now>=next_title) {
             // EN: _Exit bypasses iostream destructors; flush every CSV, including

@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <future>
+#include <chrono>
 
 namespace pgr::gldirect {
 // Owned, API-neutral draw data. Guest pointers and SDK objects never reach GL.
@@ -102,6 +103,8 @@ struct Submission {
 // Stop releases a producer blocked by a closing window.
 void Submit(Submission frame);
 bool Take(Submission& frame);
+// EN/PT-BR: Bounded wait for queued commands / espera limitada por comandos.
+void WaitForWork(std::chrono::microseconds timeout);
 void Stop();
 void Fail(std::string reason);
 std::string Failure();

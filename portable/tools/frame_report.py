@@ -42,6 +42,23 @@ def pacing(intervals, target_fps):
           f"longest consecutive budget+1 ms overruns={longest}")
 
 
+def timeline(samples, window, target_fps):
+    """EN: Nonoverlapping windows of measured presentations, not guest ticks.
+    PT-BR: Janelas sem sobreposição de apresentações medidas, não ticks do jogo.
+    """
+    budget = 1000 / target_fps
+    print(f"Timeline / Linha do tempo ({window} measured intervals per window):")
+    for start in range(0, len(samples), window):
+        group = samples[start:start + window]
+        values = [value for _, value in group]
+        rate = 1000 / statistics.mean(values)
+        p95 = sorted(values)[math.ceil(0.95 * len(values)) - 1]
+        over = sum(value > budget + 1 for value in values) / len(values)
+        print(f"  frames {group[0][0]}..{group[-1][0]}: n={len(values)}, "
+              f"FPS={rate:.2f}, P95={p95:.3f} ms, "
+              f"over budget+1 ms={over:.1%}, max={max(values):.3f} ms")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("directory", type=Path)
@@ -52,7 +69,11 @@ def main():
                         help="exclude this frame and all later frames")
     parser.add_argument("--target-fps", type=float, default=60,
                         help="frametime budget to evaluate (default: 60)")
+    parser.add_argument("--window", type=int, default=0,
+                        help="report nonoverlapping windows of N measured intervals (0 disables)")
     args = parser.parse_args()
+    if args.window < 0:
+        parser.error("--window must be nonnegative")
     if not math.isfinite(args.target_fps) or args.target_fps <= 0:
         parser.error("--target-fps must be a finite positive number")
     if args.before_frame is not None and args.before_frame <= args.after_frame:
@@ -100,13 +121,15 @@ def main():
                 raise ValueError("invalid successful-present interval")
             # The first successful present establishes the clock and has no
             # previous successful presentation to measure; it reports zero.
-            intervals = [t for t in measured if t > 0]
+            samples = [(int(row["frame"]), t) for row, t in zip(rows, measured) if t > 0]
+            intervals = [t for _, t in samples]
             print(f"Interval source=successful-present counter; measured intervals={len(intervals)}; "
                   f"uninitialized intervals omitted={len(measured)-len(intervals)}")
         elif has_status:
             # Older native CSVs have status but no direct counter. Account for
             # time spent in failed attempts between successful presentations.
             intervals = []
+            samples = []
             elapsed = 0.0
             for row in requested_rows:
                 interval = float(row["frame_ms"])
@@ -116,10 +139,12 @@ def main():
                 if int(row["presented"]) == 1:
                     if elapsed > 0:
                         intervals.append(elapsed)
+                        samples.append((int(row["frame"]), elapsed))
                     elapsed = 0.0
             print("Interval source=accumulated logged intervals between successful presentations")
         else:
             intervals = [float(r["frame_ms"]) for r in rows]
+            samples = [(int(row["frame"]), t) for row, t in zip(rows, intervals)]
             if any(not math.isfinite(t) or t <= 0 for t in intervals):
                 raise ValueError("invalid legacy frame interval")
     except (KeyError, TypeError, ValueError) as error:
@@ -130,6 +155,8 @@ def main():
           "(scene selection requires visual confirmation)")
     stats("End-to-end frame", intervals)
     pacing(intervals, args.target_fps)
+    if args.window:
+        timeline(samples, args.window, args.target_fps)
     for key in ("cpu_ms", "capture_ms", "max_draw_ms", "texture_check_ms", "assemble_ms",
                 "decode_ms", "queue_wait_ms", "execute_ms", "fence_ms", "acquire_ms", "present_ms"):
         stats(key, [float(r[key]) for r in rows if key in r])

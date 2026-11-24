@@ -113,6 +113,19 @@ class FrameReportTests(unittest.TestCase):
                 self.assertIn(message, result.stderr)
                 self.assertNotIn("Mean presentation rate", result.stdout)
 
+    def test_timeline_uses_successful_measured_intervals(self):
+        # EN/PT-BR: Keep real frame IDs / preserve IDs reais após falhas.
+        self.write("frames.csv", ["frame", "frame_ms", "presented", "presented_frame_ms",
+                                  "supported_draws", "rejected_draws"],
+                   [[1, 1, 1, 0, 10, 0], [2, 1, 0, 0, 10, 0],
+                    [3, 1, 1, 20, 10, 0], [4, 1, 1, 40, 10, 0],
+                    [5, 1, 1, 50, 10, 0]])
+        result = self.run_report("--window", "2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("frames 3..4: n=2, FPS=33.33", result.stdout)
+        self.assertIn("frames 5..5: n=1, FPS=20.00", result.stdout)
+        self.assertNotIn("frames 1..2:", result.stdout)
+
     def test_reference_uses_capture_frame_range(self):
         self.write("pgr1_perf.csv", ["capture_frame", "reference_draw_ms", "reference_clear_ms", "decode_ms", "ipc_ms"],
                    [[60, 100, 20, 3, 1], [120, 200, 40, 6, 2]])
