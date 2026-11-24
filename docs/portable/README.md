@@ -49,7 +49,8 @@ and the [texture cache experiment](11-cache-texturas-04d9.md).
 Recent optimizations include [CPU/GPU overlap](14-sobreposicao-cpu-gpu.md),
 [parallel SPIR-V shader compilation](15-compilacao-paralela-shaders.md) and
 [Vulkan draw-state reuse](16-estados-vulkan.md) and
-[CPU vertex expansion](17-expansao-vertices.md).
+[CPU vertex expansion](17-expansao-vertices.md), and
+[reflection-aware batching / agrupamento com reflexos](18-reflexos-agrupamento.md).
 [Automatic Vulkan GPU selection](13-selecao-automatica-gpu.md) allows
 `bash scripts/portable-vulkan.sh run-game` on either AMD or NVIDIA
 without a vendor-specific environment variable.

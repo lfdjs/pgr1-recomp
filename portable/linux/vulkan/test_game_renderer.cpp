@@ -288,6 +288,21 @@ int main() {
     assert(renderer.LastStats().cube_cache_hits>=2);
     assert(renderer.LastStats().cube_face_copies==1);
 
+    // EN: A reflection source write must split groups and preserve both colors.
+    // PT-BR: Escrever na origem do reflexo deve separar grupos e preservar cores.
+    auto left_cube=cube,right_cube=cube;
+    left_cube.pipeline.scissors={{0,0,16,32}};
+    right_cube.pipeline.scissors={{16,0,16,32}};
+    auto red_source=source_clear;red_source.color=0xffff0000;
+    auto green_source=source_clear;green_source.color=0xff00ff00;
+    pixels=Execute(renderer,{Clear(),red_source,left_cube,left_cube,left_cube,
+                            green_source,right_cube,right_cube,right_cube});
+    Pixel(pixels,8,16,0xffff0000);Pixel(pixels,24,16,0xff00ff00);
+    assert(renderer.LastStats().cube_face_copies==2);
+    const char* external_env=std::getenv("PGR1_VK_BATCH_EXTERNAL");
+    if(!external_env || std::strcmp(external_env,"0")!=0)
+        assert(renderer.LastStats().batched_groups>=2);
+
     // Render-target texture sampling has guest top-left orientation. It must
     // not inherit the extra vertical flip used by the OpenGL backend.
     source_clear.color=0xff0000ff;

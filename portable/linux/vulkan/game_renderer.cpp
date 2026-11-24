@@ -1025,6 +1025,10 @@ struct Renderer::Impl {
             auto pipeline=PipelineFor(draw,Pass(color->format,depth,Samples(color)));
             return {pipeline,Bindings(draw,offsets[index])};
         };
+        // EN: Keep the old conservative grouping available for A/B and rollback.
+        // PT-BR: Preserve o agrupamento anterior para comparação e reversão.
+        const char* external_env=std::getenv("PGR1_VK_BATCH_EXTERNAL");
+        const bool batch_external=!external_env || std::strcmp(external_env,"0")!=0;
         size_t batch_start=0,batch_end=0;
         std::vector<std::pair<VkPipeline,VkDescriptorSet>> batch_prepared;
         // EN: Vulkan state is retained inside one contiguous render pass.
@@ -1057,15 +1061,18 @@ struct Renderer::Impl {
                 if(!clears.empty() && !rects.empty())vkCmdClearAttachments(cmd,clears.size(),clears.data(),rects.size(),rects.data());
                 vkCmdEndRenderPass(cmd); color_versions[c.target.color]=++color_serial; continue;
             }
-            // Static textures can be uploaded before this render pass begins.
-            // Do not batch if any draw reads a rendered target or dynamic cube:
-            // those need the preceding draw to have finished/resolved first.
+            // EN: Prepare immutable textures and stable external GPU sources
+            // before opening the pass. Any source that aliases the destination,
+            // or a change of target/clear/copy/readback, breaks the group.
+            // PT-BR: Prepare texturas imutáveis e origens externas estáveis antes
+            // do pass. Aliases do destino, troca de alvo, clear/copy/readback
+            // interrompem o agrupamento.
             bool batched=i>=batch_start && i<batch_end;
             bool have_single_prepared=false;
             std::pair<VkPipeline,VkDescriptorSet> single_prepared{};
             if(!batched) {
                 batch_prepared.clear();
-                const size_t candidate_end=batch::CandidateEnd(frame.commands,i);
+                const size_t candidate_end=batch::CandidateEnd(frame.commands,i,128,batch_external);
                 if(candidate_end-i>=3) {
                     std::vector<std::pair<VkPipeline,VkDescriptorSet>> prepared;
                     prepared.reserve(candidate_end-i);
