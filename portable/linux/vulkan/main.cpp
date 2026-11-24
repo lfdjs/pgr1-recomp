@@ -413,7 +413,11 @@ int main(int argc, char** argv) {
             SDL_Delay(1);
         }
         if (now>=next_title) {
-            timings.flush(); submissions.flush(); gpu_times.flush(); logx::Flush();
+            // EN: _Exit bypasses iostream destructors; flush every CSV, including
+            // vk_batches.csv, before periodic snapshots and final shutdown.
+            // PT-BR: _Exit ignora destruidores de streams; grave tambem
+            // vk_batches.csv em disco antes de relatorios e do encerramento.
+            timings.flush(); submissions.flush(); gpu_times.flush(); batch_log.flush(); logx::Flush();
             if (fs::is_regular_file("snap")) {
                 if (!renderer->Capture("snap.ppm")) std::fputs("vulkan: requested snapshot failed\n",stderr);
                 std::error_code error; fs::remove("snap",error);
@@ -448,7 +452,11 @@ int main(int argc, char** argv) {
     std::printf("PGR1 NATIVE Vulkan game: guest_frame=%llu presented=%llu accepted=%llu rejected=%llu elapsed_s=%.3f\n",
         static_cast<unsigned long long>(last_guest_frame),static_cast<unsigned long long>(total_frames),
         static_cast<unsigned long long>(total_accepted),static_cast<unsigned long long>(total_rejected),elapsed);
-    timings.flush(); submissions.flush(); gpu_times.flush(); logx::Flush();
+    // EN: _Exit bypasses iostream destructors; flush every CSV, including
+            // vk_batches.csv, before periodic snapshots and final shutdown.
+            // PT-BR: _Exit ignora destruidores de streams; grave tambem
+            // vk_batches.csv em disco antes de relatorios e do encerramento.
+            timings.flush(); submissions.flush(); gpu_times.flush(); batch_log.flush(); logx::Flush();
     pgr::gldirect::StopAudio();
     if (had_input) SendCommand("");
     if (pad) SDL_CloseGamepad(pad);
