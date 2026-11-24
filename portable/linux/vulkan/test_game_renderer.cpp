@@ -464,13 +464,23 @@ int main() {
     pixels=Execute(renderer,{Clear(),point});Pixel(pixels,16,16,0xff000000);
     assert(renderer.LastStats().accepted==0 && renderer.LastStats().rejected==1);
 
-    // Guest fence/busy waits also complete when no readback or later frame is
-    // available to drive the renderer. Completion is signalled after a GPU fence.
+    // EN: An offscreen submission may complete asynchronously. Its promise
+    // becomes ready only after the owning Vulkan thread polls the GPU fence.
+    // PT-BR: Uma submissao offscreen pode concluir de forma assincrona;
+    // a promessa so e liberada apos consultar a fence na thread Vulkan.
     Submission fenced;fenced.present=false;fenced.commands={Clear(),red};
     fenced.completion=std::make_shared<std::promise<void>>();
     auto completed=fenced.completion->get_future();
     assert(renderer.Render(fenced));
-    assert(completed.wait_for(std::chrono::seconds(1))==std::future_status::ready);
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+    // EN: Exercise the same nonblocking idle-poll path as the real main loop.
+    // PT-BR: Exercite a mesma sondagem sem bloqueio usada no loop do jogo.
+    while(completed.wait_for(std::chrono::seconds(0))!=std::future_status::ready &&
+          std::chrono::steady_clock::now()<deadline) {
+        renderer.PollCompletion();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(completed.wait_for(std::chrono::seconds(0))==std::future_status::ready);
     completed.get();
     pixels=Execute(renderer,{});Pixel(pixels,16,16,0xffff0000);
 
