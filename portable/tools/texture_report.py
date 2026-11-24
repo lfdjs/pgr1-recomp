@@ -50,7 +50,7 @@ def read_frames(path: Path, after: int = 0, before: int | None = None):
                     raise ValueError("non-finite metric")
                 if counts["texture_same_draw_reuses"] > counts["texture_static_binds"]:
                     raise ValueError("reuse exceeds static binds")
-                optional = {key: int(row[key]) for key in (*MIP_COUNTS, *CACHE_COUNTS) if key in fields}
+                optional = {key: int(row[key]) for key in (*MIP_COUNTS, *CACHE_COUNTS, "texture_overlap_checks") if key in fields}
                 if any(value < 0 for value in optional.values()):
                     raise ValueError("negative mip counter")
             except (TypeError, ValueError) as exc:
@@ -78,6 +78,10 @@ def report(rows, name="Selected frames"):
           f"({100*total['texture_same_draw_reuses']/max(total['texture_static_binds'],1):.2f}%)")
     print(f"  Guest memcmp calls: {total['texture_memcmp_checks']:,} "
           f"({total['texture_memcmp_checks']/n:.1f}/frame)")
+    if "texture_overlap_checks" in rows[0]:
+        overlap = sum(row["texture_overlap_checks"] for row in rows)
+        print(f"  Exact comparisons overlapped / Comparações exatas sobrepostas: {overlap:,} "
+              f"({overlap/n:.1f}/frame)")
     print(f"  Requested memcmp scan: {total['texture_memcmp_bytes']/1048576:.1f} MiB total, "
           f"{total['texture_memcmp_bytes']/n/1048576:.1f} MiB/frame upper bound")
     print(f"  Decoded texture snapshots: {total['texture_decodes']:,} "

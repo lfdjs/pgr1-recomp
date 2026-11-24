@@ -32,6 +32,9 @@
 #include "texture_snapshot_key.h"
 #include "texture_level_reuse.h"
 #include "texture_cache_policy.h"
+#ifdef PGR1_NATIVE_VULKAN
+#include "texture_compare_worker.h"
+#endif
 #include "vertex_register_expand.h"
 #include <cstdlib>
 #include <array>
@@ -143,6 +146,11 @@ class GLBackend final : public Backend {
 
     std::uint64_t frames_=0, draws_=0, unsupported_=0;
     std::uint64_t compare_frame_=0;
+#ifdef PGR1_NATIVE_VULKAN
+    // EN: Opt-in until measured on the reference Sandy Bridge system.
+    // PT-BR: Opcional até a medição no Sandy Bridge de referência.
+    std::unique_ptr<TextureCompareWorker> compare_worker_;
+#endif
     std::map<std::pair<uint64_t,uint64_t>,std::shared_ptr<const ShaderPair>> shaders_;
     struct CachedPixels {
         TextureDesc desc{};
@@ -192,6 +200,13 @@ public:
         // Assemble's converted path still uses the SDK's exact Xbox attribute decoders.
         // No global flag is toggled around individual draws.
         g_raw_vertices=false;
+#ifdef PGR1_NATIVE_VULKAN
+        const char* overlap=std::getenv("PGR1_VK_TEXTURE_OVERLAP");
+        if(overlap && std::strcmp(overlap,"1")==0)
+            compare_worker_=std::make_unique<TextureCompareWorker>();
+        LOGR("%s: exact texture/vertex overlap / sobreposição exata textura/vértices = %s",
+            kBackendName,compare_worker_?"on":"off");
+#endif
         if(const char* compare=std::getenv("PGR1_COMPARE_FRAME")) compare_frame_=std::strtoull(compare,nullptr,10);
 #ifdef PGR1_NATIVE_VULKAN
         LOGR("vulkan-capture: PGR1 SDK command capture %ux%u; SDK HLSL -> Vulkan SPIR-V, owned FIFO",w,h);
@@ -281,6 +296,21 @@ public:
         };
         std::array<VerifiedTexture,4> verified_this_draw{};
         unsigned verified_count=0;
+        // EN: SDK assembly only reads guest inputs. Keep it on the capture
+        // thread and finish any borrowed comparison before leaving this Draw.
+        // PT-BR: A montagem SDK lê entradas guest. Mantenha-a na thread de
+        // captura e conclua qualquer comparação emprestada antes de sair.
+        Assembled a;
+        bool assembled=false, assembly_ok=false;
+        auto assemble=[&] {
+            const auto start_assembly=std::chrono::steady_clock::now();
+            assembly_ok=Assemble(s,prim,start,count,indices,a);
+            assembled=true;
+            const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now()-start_assembly).count();
+            frame_.assemble_ns+=ns;
+            return ns;
+        };
         bool fixed_enabled=true;
         for(unsigned stage=0;stage<4;stage++) {
             if(s.ps) {
@@ -348,12 +378,28 @@ public:
                cached.desc.cube==d.cube && cached.desc.linear==d.linear && cached.desc.pitch==d.pitch &&
                cached.guest.size()==bytes;
             bool changed=!metadata_same;
+            std::int64_t overlapped_assembly_ns=0;
             if(metadata_same) {
                 ++frame_.texture_memcmp_checks;
                 frame_.texture_memcmp_bytes+=bytes; // EN: upper bound (early exit); PT-BR: limite superior (saída antecipada)
-                changed=std::memcmp(guest,cached.guest.data(),bytes)!=0;
+#ifdef PGR1_NATIVE_VULKAN
+                // EN: One large cached texture per draw can overlap vertex
+                // assembly. Small checks stay inline to avoid wake-up overhead.
+                // PT-BR: Uma textura grande por draw pode sobrepor a montagem.
+                // Comparações pequenas continuam locais, sem acordar a thread.
+                if(compare_worker_ && !assembled && bytes>=256u*1024u && count>=64) {
+                    ++frame_.texture_overlap_checks;
+                    changed=!compare_worker_->CompareWhile(guest,cached.guest.data(),bytes,[&]{
+                        overlapped_assembly_ns=assemble();
+                    });
+                } else
+#endif
+                    changed=std::memcmp(guest,cached.guest.data(),bytes)!=0;
             }
-            frame_.texture_check_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-check_start).count();
+            // EN: Do not charge assembly twice when work overlaps.
+            // PT-BR: Não contabilize a montagem duas vezes na sobreposição.
+            frame_.texture_check_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now()-check_start).count()-overlapped_assembly_ns;
             if(changed) {
                 const auto decode_start=std::chrono::steady_clock::now();
                 auto pixels=std::make_shared<TexturePixels>();
@@ -398,10 +444,8 @@ public:
             t.pixels=cached.pixels;
             verified_this_draw[verified_count++]={signature,t.pixels};
         }
-        Assembled a;
-        const auto assembly_start=std::chrono::steady_clock::now();
-        if(!Assemble(s,prim,start,count,indices,a)) { Unsupported("SDK primitive/vertex assembly failed"); return; }
-        frame_.assemble_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-assembly_start).count();
+        if(!assembled)assemble();
+        if(!assembly_ok) { Unsupported("SDK primitive/vertex assembly failed"); return; }
         if(a.vertices.empty() || !(a.regs&1)) { Unsupported("raw or missing position attributes"); return; }
         if(a.pretransformed && (c.target.height==480 || c.target.height==576) && c.target.width>=c.target.height &&
            app::FrameAspect()>app::kGame.hud_aspect+1e-3f) {

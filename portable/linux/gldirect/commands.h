@@ -90,6 +90,8 @@ struct Submission {
     std::uint64_t texture_cache_evictions=0, texture_cache_misses=0,
         texture_descriptor_redecodes=0, texture_guest_redecodes=0,
         texture_cache_entries_peak=0;
+    // EN/PT-BR: Exact comparisons overlapped with assembly / comparações exatas sobrepostas.
+    std::uint64_t texture_overlap_checks=0;
     std::uint32_t front=0;
     bool present=true;
     std::uint32_t reference_width=0, reference_height=0;

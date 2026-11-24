@@ -34,6 +34,9 @@ O Vulkan seleciona uma GPU dedicada compatível e registra o nome no log.
 [Perfis de CPU x86-64 e compilação otimizada (04D.18A)](20-perfis-cpu-x86-64.md):
 compatibilidade Intel/AMD, detecção automática e testes A/B no i7-2700K.
 
+[Sobreposição de comparações exatas de texturas (04D.18B, experimental)](21-sobreposicao-texturas.md):
+worker limitado, sem ignorar escritas; rastreamento de memória permanece pendente.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.

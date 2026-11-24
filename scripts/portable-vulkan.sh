@@ -166,6 +166,7 @@ Run options: PGR1_RUN_SECONDS=60 OUTPUT=1280x720 PGR1_FULLSCREEN=0 PGR1_CAPTURE=
              PGR1_CAPTURE_FRAME=300 PGR1_CAPTURE_FRAME_PATH=capture-frame.ppm
              PGR1_VK_PIPELINED=0 # diagnostic: restore per-submission GPU fence wait
              PGR1_VK_SHADER_WORKERS=1 # diagnostic: single shader worker
+             PGR1_VK_TEXTURE_OVERLAP=1 # experimental / experimental: exact compare + vertex assembly
              PGR1_VK_BATCH_EXTERNAL=0 # EN/PT-BR: disable external-source batching / desativar agrupamento de origens externas
              # PT-BR: 0 restaura a espera sincrona em cada submissao
              PGR1_COMPARE_FRAME=300 # optional CPU reference and Vulkan images/error report

@@ -89,6 +89,11 @@ if(BUILD_TESTING)
   # PT-BR: Teste jobs de shader paralelos sem exigir uma GPU.
   find_package(Threads REQUIRED)
   # EN/PT-BR: Queue wake-up and bounded idle polling / Notificação e espera limitada.
+  # EN/PT-BR: Exact worker comparisons / Comparações exatas no worker.
+  add_executable(pgr1_vk_texture_overlap_test ../gldirect/tests/test_texture_compare_worker.cpp)
+  target_link_libraries(pgr1_vk_texture_overlap_test PRIVATE Threads::Threads)
+  target_compile_options(pgr1_vk_texture_overlap_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME vk_texture_compare_overlap COMMAND pgr1_vk_texture_overlap_test)
   add_executable(pgr1_vk_queue_test ../gldirect/tests/test_submission_queue.cpp ../gldirect/commands.cpp)
   target_link_libraries(pgr1_vk_queue_test PRIVATE Threads::Threads)
   target_compile_options(pgr1_vk_queue_test PRIVATE -UNDEBUG)
