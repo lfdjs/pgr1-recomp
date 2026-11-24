@@ -58,3 +58,16 @@ safety. Real SDK rendering and performance validation are pending.
 Page tracking remains open: the two shared physical RAM aliases
 and direct guest/host writes must all be covered before dropping
 exact comparisons.
+
+## Resultado no i7-2700K / Sandy Bridge result
+
+PT-BR: 107.638 de 3.408.276 comparações (3,16%) foram sobrepostas.
+FPS médio 26,90 contra 28,26 na sessão O2 anterior; P95 de captura
+64,588 contra 47,359 ms e P95 de verificação 34,817 contra 20,862 ms.
+As sessões não são pareadas, mas não demonstram benefício. Mantenha
+PGR1_VK_TEXTURE_OVERLAP=0 (padrão); não amplie a quantidade de workers.
+
+EN: 107,638 of 3,408,276 checks overlapped (3.16%). Mean FPS was
+26.90 vs 28.26, capture P95 64.588 vs 47.359 ms. Different sessions
+are not a controlled comparison, but no benefit is demonstrated.
+Keep PGR1_VK_TEXTURE_OVERLAP=0 (default); do not expand the worker pool.

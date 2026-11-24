@@ -187,7 +187,16 @@ int main() {
     s.vs->constants.push_back({100,{1,1,1,1}}); s.vsc[100]={2,3,4,5};
     backend->Draw(s,5,0,3,nullptr); backend->Present(s.rt); assert(Take(f));
     assert(f.commands.size()==1 && f.commands[0].vertex_constants[100][0]==2);
-    s.vs=std::make_shared<gpu::VertexShader>(); s.vs->program={0,14u<<21,0,1};
+    // EN: A cached program must not freeze changing VC or owned vertices.
+    // PT-BR: Um programa em cache não congela VC ou vértices próprios.
+    const auto previous_shader=f.commands[0].shaders;
+    s.vsc[100][0]=9;
+    backend->Draw(s,5,0,3,nullptr); backend->Present(s.rt); assert(Take(f));
+    assert(f.commands.size()==1 && f.commands[0].shaders==previous_shader);
+    assert(f.commands[0].vertex_constants[100][0]==9);
+    // EN: Mutate the same object; opcode validation must not use pointer identity.
+    // PT-BR: Mude o mesmo objeto; a validação não pode depender do endereço.
+    s.vs->program={0,14u<<21,0,1};
     backend->Draw(s,5,0,3,nullptr); backend->Present(s.rt); assert(Take(f));
     assert(f.commands.empty() && f.unsupported==2); // unknown opcode is recorded, never rendered as zero
 #ifdef PGR1_NATIVE_VULKAN

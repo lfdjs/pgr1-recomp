@@ -90,6 +90,10 @@ if(BUILD_TESTING)
   find_package(Threads REQUIRED)
   # EN/PT-BR: Queue wake-up and bounded idle polling / Notificação e espera limitada.
   # EN/PT-BR: Exact worker comparisons / Comparações exatas no worker.
+  # EN/PT-BR: Exact shader cache identity / Identidade exata do cache de shaders.
+  add_executable(pgr1_vk_vertex_program_cache_test ../gldirect/tests/test_vertex_program_cache.cpp)
+  target_compile_options(pgr1_vk_vertex_program_cache_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME vk_vertex_program_exact_cache COMMAND pgr1_vk_vertex_program_cache_test)
   add_executable(pgr1_vk_texture_overlap_test ../gldirect/tests/test_texture_compare_worker.cpp)
   target_link_libraries(pgr1_vk_texture_overlap_test PRIVATE Threads::Threads)
   target_compile_options(pgr1_vk_texture_overlap_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)

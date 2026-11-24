@@ -37,6 +37,9 @@ compatibilidade Intel/AMD, detecção automática e testes A/B no i7-2700K.
 [Sobreposição de comparações exatas de texturas (04D.18B, experimental)](21-sobreposicao-texturas.md):
 worker limitado, sem ignorar escritas; rastreamento de memória permanece pendente.
 
+[Redução de trabalho repetido na captura (04D.18C)](22-captura-sem-repeticao.md):
+cache exato de programas, buffers temporários e layout de texturas.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.

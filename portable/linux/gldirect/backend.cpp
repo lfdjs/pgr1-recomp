@@ -36,6 +36,7 @@
 #include "texture_compare_worker.h"
 #endif
 #include "vertex_register_expand.h"
+#include "vertex_program_cache.h"
 #include <cstdlib>
 #include <array>
 
@@ -152,6 +153,7 @@ class GLBackend final : public Backend {
     std::unique_ptr<TextureCompareWorker> compare_worker_;
 #endif
     std::map<std::pair<uint64_t,uint64_t>,std::shared_ptr<const ShaderPair>> shaders_;
+    VertexProgramCache vertex_program_cache_;
     struct CachedPixels {
         TextureDesc desc{};
         std::shared_ptr<const TexturePixels> pixels;
@@ -254,9 +256,19 @@ public:
             const auto mode=(s.rs[kRsPsTextureModes]>>(stage*5))&31;
             if(mode==8 || mode>0x11) { Unsupported("unknown NV2A texture shader mode"); DumpRejected("ps",s.ps->def); return; }
         }
-        if(program) for(size_t i=0;i+3<s.vs->program.size();i+=4) {
-            unsigned op=(s.vs->program[i+1]>>21)&15;
-            if(op>13) { Unsupported("unknown NV2A MAC opcode"); DumpRejected("vs",s.vs->program); LOGR("%s: VS %llx instruction %zu opcode %u",kBackendName,(unsigned long long)s.vs->hash,i/4,op); return; }
+        uint64_t program_hash=0;
+        if(program) {
+            // EN: Exact program words, not the shader object's address, prove a cache hit.
+            // PT-BR: Palavras exatas, não o endereço do shader, comprovam o acerto.
+            const auto info=vertex_program_cache_.Get(s.vs.get(),s.vs->program,
+                [](const void* data,std::size_t bytes){return Hash(data,bytes);});
+            if(!info.valid) {
+                Unsupported("unknown NV2A MAC opcode"); DumpRejected("vs",s.vs->program);
+                LOGR("%s: VS %llx instruction %zu opcode %u",kBackendName,
+                    (unsigned long long)s.vs->hash,info.bad_instruction,info.bad_opcode);
+                return;
+            }
+            program_hash=info.hash;
         }
         if(s.rs[kRsPointSpriteEnable] || s.aa_x!=1 || s.aa_y!=1) {
             Unsupported("point sprites/MSAA"); return;
@@ -300,7 +312,11 @@ public:
         // thread and finish any borrowed comparison before leaving this Draw.
         // PT-BR: A montagem SDK lê entradas guest. Mantenha-a na thread de
         // captura e conclua qualquer comparação emprestada antes de sair.
-        Assembled a;
+        // EN: The SDK resets its converted buffers on Assemble(); retain
+        // capacity on the producer thread, never borrow it in a submission.
+        // PT-BR: Assemble() reinicia os buffers convertidos do SDK; retenha
+        // a capacidade na thread produtora, sem emprestá-los à submissão.
+        static thread_local Assembled a;
         bool assembled=false, assembly_ok=false;
         auto assemble=[&] {
             const auto start_assembly=std::chrono::steady_clock::now();
@@ -335,8 +351,10 @@ public:
             tex_info[stage].kind=d.cube ? kTexCube : kTex2D; tex_info[stage].rect=d.linear;
             constants.texsize[stage][0]=float(d.width); constants.texsize[stage][1]=float(d.height);
             if(gpu_written_.contains(d.data) && gpu_epoch_[d.data]!=DirtyEpoch(d.data)) gpu_written_.erase(d.data);
+            // EN/PT-BR: Compute face stride once / Calcule o passo entre faces uma vez.
+            const auto face_stride=d.cube?FaceSize(d):0u;
             if(d.cube) for(unsigned face=0;face<6;face++) {
-                const auto address=d.data+face*FaceSize(d);
+                const auto address=d.data+face*face_stride;
                 if(gpu_written_.contains(address)) t.face_targets[face]=address;
             }
             if(!d.cube && gpu_written_.contains(d.data)) {
@@ -371,12 +389,16 @@ public:
             frame_.texture_cache_entries_peak=std::max(
                 frame_.texture_cache_entries_peak,std::uint64_t(textures_.size()));
             const auto check_start=std::chrono::steady_clock::now();
-            const auto bytes=TotalSize(d);
             const auto* guest=static_cast<const uint8_t*>(kernel::HostPtr(d.data));
             const bool metadata_same=cached.pixels && cached.desc.format==d.format && cached.desc.width==d.width &&
                cached.desc.height==d.height && cached.desc.depth==d.depth && cached.desc.levels==d.levels &&
-               cached.desc.cube==d.cube && cached.desc.linear==d.linear && cached.desc.pitch==d.pitch &&
-               cached.guest.size()==bytes;
+               cached.desc.cube==d.cube && cached.desc.linear==d.linear && cached.desc.pitch==d.pitch;
+            // EN: TotalSize depends only on these descriptor fields; a valid
+            // snapshot already owns exactly that span. Still compare every byte.
+            // PT-BR: TotalSize depende só desses campos; um snapshot válido
+            // contém exatamente essa extensão. Ainda compare todos os bytes.
+            const std::size_t bytes=metadata_same?cached.guest.size():
+                (d.cube?std::size_t(std::uint32_t(face_stride*6u)):TotalSize(d));
             bool changed=!metadata_same;
             std::int64_t overlapped_assembly_ns=0;
             if(metadata_same) {
@@ -413,7 +435,7 @@ public:
                     cached.pixels->levels.size()==std::size_t(face_count)*d.levels;
                 for(unsigned face=0;face<face_count;face++) for(unsigned level=0;level<d.levels;level++) {
                     const std::size_t index=std::size_t(face)*d.levels+level;
-                    const std::size_t offset=std::size_t(face)*FaceSize(d)+LevelOffset(d,level);
+                    const std::size_t offset=std::size_t(face)*face_stride+LevelOffset(d,level);
                     const std::size_t length=LevelSize(d,level);
                     // EN: Reuse only if every byte in this mip is identical to
                     // the previous immutable snapshot (not just DirtyEpoch).
@@ -426,7 +448,7 @@ public:
                         continue;
                     }
                     std::vector<uint32_t> decoded;
-                    if(!DecodeBgra(d,level,guest+std::size_t(face)*FaceSize(d),decoded)) {
+                    if(!DecodeBgra(d,level,guest+std::size_t(face)*face_stride,decoded)) {
                         Unsupported("texture decoder format"); return;
                     }
                     pixels->levels.push_back(std::move(decoded));
@@ -464,7 +486,7 @@ public:
         if(constants.hud[0]<0) { p.clip_scale=-constants.hud[0]; p.clip_pivot=constants.hud[1]; }
         auto pk=MakePixelKey(s,tex_info); pk.wbuf=s.rs[kRsZEnable]==2;
         FixedKey fk{}; if(!program) fk=MakeFixedKey(s);
-        uint64_t vh=program ? Hash(s.vs->program.data(),s.vs->program.size()*4) : Hash(&fk,sizeof(fk));
+        uint64_t vh=program ? program_hash : Hash(&fk,sizeof(fk));
         vh=Hash(&a.regs,sizeof(a.regs),vh); vh=Hash(&a.pretransformed,sizeof(a.pretransformed),vh);
         const uint64_t ph=Hash(&pk,sizeof(pk));
         auto& pair=shaders_[{vh,ph}];
