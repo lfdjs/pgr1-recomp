@@ -9,6 +9,24 @@ OUT="${PGR1_VK_BUILD_DIR:-$ROOT/out/pgr1-vulkan-wsi}"
 RUN="${PGR1_VK_RUN_DIR:-${PGR1_RUN_DIR:-$ROOT/.local/run/vulkan}}"
 [[ "$RUN" = /* ]] || RUN="$ROOT/$RUN"
 
+# EN: Portable ISA by default; native builds are machine-local.
+# PT-BR: ISA portátil por padrão; builds nativos são locais à máquina.
+CPU_PROFILE="${PGR1_VK_CPU_PROFILE:-auto}"
+GUEST_OPT="${PGR1_VK_GUEST_OPT:-1}"
+cpu_info() {
+  python3 "$ROOT/portable/tools/cpu_info.py" --profile "$CPU_PROFILE" --guest-opt "$GUEST_OPT" "$@"
+}
+configure_game() {
+  local release="$1" signature
+  # EN: Validate the host ISA before building or running specialized code.
+  # PT-BR: Valide a ISA antes de compilar ou iniciar código especializado.
+  signature="$(cpu_info --signature)" || return 2
+  cmake -S portable/linux/vulkan -B "$OUT" -DCMAKE_BUILD_TYPE=Release \
+    -DPGR1_VK_BUILD_GAME=ON -DPGR1_RELEASE="$release" \
+    -DPGR1_VK_CPU_PROFILE="$CPU_PROFILE" -DPGR1_VK_GUEST_OPT="$GUEST_OPT" \
+    -DPGR1_VK_CPU_SIGNATURE="$signature"
+}
+
 region() {
   [[ -f assets/default.xbe ]] || { echo 'Missing assets/default.xbe' >&2; return 2; }
   case "$(sha1sum assets/default.xbe | cut -d' ' -f1)" in
@@ -23,27 +41,30 @@ build_game() {
   [[ -f sdk/runtime/gpu/vertex.cpp ]] || { echo 'Restore the pinned sdk submodule before build-game.' >&2; return 2; }
   local release
   release="$(region)"
-  for name in cmake c++ glslangValidator; do
+  cpu_info || return 2
+  for name in cmake c++ glslangValidator python3; do
     command -v "$name" >/dev/null || { echo "Missing dependency: $name" >&2; return 2; }
   done
   # Incremental regeneration ensures generated code matches this XBE and config.
   # The SDK checkout/revision is never changed by this command.
   [[ -f build/linux/build.ninja ]] || bash scripts/portable-dev.sh linux-tools
   bash scripts/portable-dev.sh recompile
-  cmake -S portable/linux/vulkan -B "$OUT" -DCMAKE_BUILD_TYPE=Release \
-    -DPGR1_VK_BUILD_GAME=ON -DPGR1_RELEASE="$release"
+  configure_game "$release"
   cmake --build "$OUT" --parallel "${JOBS:-4}"
   sha1sum assets/default.xbe | cut -d' ' -f1 > "$OUT/game-xbe.sha1"
 }
 
 run_game() {
-  local digest recorded='' gpu_choice="${PGR1_VK_DEVICE:-auto}"
-  region >/dev/null
+  local digest recorded='' gpu_choice="${PGR1_VK_DEVICE:-auto}" release
+  release="$(region)"
+  cpu_info --signature >/dev/null || return 2
   digest="$(sha1sum assets/default.xbe | cut -d' ' -f1)"
   [[ ! -f "$OUT/game-xbe.sha1" ]] || recorded="$(cat "$OUT/game-xbe.sha1")"
   if [[ -x "$OUT/pgr1_vk_game" && "$digest" == "$recorded" ]]; then
     # Source/shader/CMake changes must not run a stale binary simply because
     # default.xbe is unchanged. Ninja/Make performs an incremental build.
+    # EN/PT-BR: Reconfigure changed CPU profiles / Reconfigure perfis alterados.
+    configure_game "$release"
     cmake --build "$OUT" --parallel "${JOBS:-4}" --target pgr1_vk_game
   else
     build_game
@@ -55,6 +76,7 @@ run_game() {
     cd "$RUN"
     echo 'Backend: native Vulkan (SDK NV2A -> HLSL -> SPIR-V, real recompiled PGR1)'
     echo "Run directory: $RUN"
+    cpu_info
     # EN: Display the selection mode; the Vulkan backend identifies the real
     # compatible GPU after checking device and presentation capabilities.
     # PT-BR: Informe o modo; o backend Vulkan confirma a GPU compatível
@@ -75,8 +97,10 @@ run_game() {
 }
 
 case "${1:-help}" in
+  cpu-info) cpu_info ;;
   doctor)
-    for name in cmake c++ vulkaninfo; do
+    cpu_info || exit 2
+    for name in cmake c++ vulkaninfo python3; do
       if command -v "$name" >/dev/null; then echo "$name: OK"; else echo "$name: missing"; fi
     done
     if [[ -e /usr/include/vulkan/vulkan.h ]]; then echo 'Vulkan headers: system installed';
@@ -111,6 +135,7 @@ case "${1:-help}" in
     cat <<'HELP'
 PGR1 04C — NATIVE VULKAN GAME + INDEPENDENT FIXTURE TESTS
   bash scripts/portable-vulkan.sh doctor
+  bash scripts/portable-vulkan.sh cpu-info                  # CPU capabilities / capacidades da CPU
   bash scripts/portable-vulkan.sh build
   bash scripts/portable-vulkan.sh smoke --frames 180      # 04A clears only
   bash scripts/portable-vulkan.sh test                    # geometry, capture and optional SDK/Vulkan pixel tests
@@ -122,7 +147,12 @@ PGR1 04C — NATIVE VULKAN GAME + INDEPENDENT FIXTURE TESTS
   PGR1_VK_DEVICE='RTX 3060 Ti' bash scripts/portable-vulkan.sh run-game # optional manual GPU
   bash scripts/portable-vulkan.sh triage .local/run/linux
 Requires: SDL3 >=3.2, Vulkan loader/headers, glslangValidator, GPU Vulkan ICD.
-build-game additionally requires the pinned SDK, supported assets/default.xbe and compiler tools.
+build-game additionally requires the pinned SDK, supported assets/default.xbe, Python 3 and compiler tools.
+CPU build options / Opções de compilação CPU:
+  PGR1_VK_CPU_PROFILE=auto|generic|v2|v3|v4|native (auto: x86-64-v2, tune=native)
+  PGR1_VK_GUEST_OPT=1|2|3 (1: baseline / referência atual)
+  PGR1_VK_BUILD_DIR=out/pgr1-vulkan-native-o2 (separate builds / builds separados)
+  Native binaries are local to the build CPU / Binários native são locais à CPU de compilação.
 EN: Unset/empty PGR1_VK_DEVICE or 'auto' (case insensitive) chooses a compatible
     graphics+present GPU, prioritizing a discrete GPU (RTX/Radeon, etc.).
 PT-BR: Sem PGR1_VK_DEVICE ou com 'auto', o Vulkan procura uma GPU compatível,

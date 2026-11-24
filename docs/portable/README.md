@@ -31,6 +31,9 @@ e [reutilizacao de estados](16-estados-vulkan.md) e
 basta executar `bash scripts/portable-vulkan.sh run-game` nas duas máquinas.
 O Vulkan seleciona uma GPU dedicada compatível e registra o nome no log.
 
+[Perfis de CPU x86-64 e compilação otimizada (04D.18A)](20-perfis-cpu-x86-64.md):
+compatibilidade Intel/AMD, detecção automática e testes A/B no i7-2700K.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.
@@ -54,6 +57,8 @@ Recent optimizations include [CPU/GPU overlap](14-sobreposicao-cpu-gpu.md),
 [Automatic Vulkan GPU selection](13-selecao-automatica-gpu.md) allows
 `bash scripts/portable-vulkan.sh run-game` on either AMD or NVIDIA
 without a vendor-specific environment variable.
+[x86-64 CPU profiles and optimized builds (04D.18A)](20-perfis-cpu-x86-64.md)
+provide CPU capability detection and controlled compiler experiments.
 The engine-audio routing regression is resolved; the native Vulkan CPU texture cache now defaults to 1,024 entries after an A/B test exposed eviction thrashing. Full 30/60 FPS stability,
 fast MSAA and RTX 3060 Ti validation remain open.
 
