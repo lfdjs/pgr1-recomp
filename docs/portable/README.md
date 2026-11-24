@@ -20,6 +20,9 @@ na RTX 3060 Ti. Informações históricas não devem ser tratadas como validaç�
 do código mais recente.
 
 [Otimizações recentes do pipeline Vulkan](14-sobreposicao-cpu-gpu.md):
+o teste de GPU agora cobre tanto sobreposição assíncrona quanto fallback
+síncrono; veja também o comparativo de apresentação FIFO/MAILBOX.
+
 sobreposicao CPU/GPU, [compilacao paralela](15-compilacao-paralela-shaders.md)
 e [reutilizacao de estados](16-estados-vulkan.md) e
 [expansao de vertices na CPU](17-expansao-vertices.md).

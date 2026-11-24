@@ -174,8 +174,14 @@ if(BUILD_TESTING)
       "PGR1_VK_POSTFX_VERT_SPV=\"${PGR1_POSTFX_BINARY_DIR}/postfx.vert.spv\""
       "PGR1_VK_POSTFX_FRAG_SPV=\"${PGR1_POSTFX_BINARY_DIR}/postfx.frag.spv\"")
     add_dependencies(pgr1_vk_renderer_test pgr1_vk_postfx_shaders)
+    # EN: Validate async fence polling and the legacy synchronous fallback.
+    # PT-BR: Verifique a sondagem assincrona e o modo sincrono anterior.
     add_test(NAME vk_sdk_offscreen_pixels COMMAND pgr1_vk_renderer_test)
-    set_tests_properties(vk_sdk_offscreen_pixels PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+    set_tests_properties(vk_sdk_offscreen_pixels PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90
+      ENVIRONMENT "PGR1_VK_PIPELINED=1")
+    add_test(NAME vk_sdk_offscreen_pixels_sync COMMAND pgr1_vk_renderer_test)
+    set_tests_properties(vk_sdk_offscreen_pixels_sync PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90
+      ENVIRONMENT "PGR1_VK_PIPELINED=0")
 
     add_executable(pgr1_vk_backend_test backend.cpp ../gldirect/commands.cpp ../gldirect/shader_compiler.cpp
       ../gldirect/draw_constants.cpp ../gldirect/tests/backend_test.cpp
