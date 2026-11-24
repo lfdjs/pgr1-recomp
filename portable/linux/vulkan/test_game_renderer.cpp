@@ -17,6 +17,7 @@
 #include <cstring>
 #include <future>
 #include <memory>
+#include <thread> // EN/PT-BR: nonblocking fence poll / sondagem sem bloqueio
 #include <vector>
 
 namespace app {
