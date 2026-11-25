@@ -88,6 +88,15 @@ if(BUILD_TESTING)
   # EN: Verify real concurrent shader jobs without a Vulkan device.
   # PT-BR: Teste jobs de shader paralelos sem exigir uma GPU.
   find_package(Threads REQUIRED)
+  add_executable(pgr1_guest_memory_tracker_test ../../tests/memory/test_guest_memory_tracker.cpp)
+  target_include_directories(pgr1_guest_memory_tracker_test PRIVATE "${PGR1_ROOT}/portable/include" "${CMAKE_CURRENT_LIST_DIR}/../gldirect")
+  target_link_libraries(pgr1_guest_memory_tracker_test PRIVATE Threads::Threads)
+  target_compile_options(pgr1_guest_memory_tracker_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME guest_memory_coherency_contract COMMAND pgr1_guest_memory_tracker_test)
+  add_executable(pgr1_flat_primitive_indices_test ../gldirect/tests/test_flat_primitive_indices.cpp)
+  target_include_directories(pgr1_flat_primitive_indices_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../gldirect")
+  target_compile_options(pgr1_flat_primitive_indices_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME vk_flat_primitive_indices COMMAND pgr1_flat_primitive_indices_test)
   # EN/PT-BR: Queue wake-up and bounded idle polling / Notificação e espera limitada.
   # EN/PT-BR: Exact worker comparisons / Comparações exatas no worker.
   # EN/PT-BR: Exact shader cache identity / Identidade exata do cache de shaders.
@@ -144,6 +153,8 @@ if(BUILD_TESTING)
   if(Python3_EXECUTABLE)
     add_test(NAME vk_presentation_report COMMAND "${Python3_EXECUTABLE}" -B "${PGR1_ROOT}/portable/tests/frame_report_tests.py")
     add_test(NAME vk_cpu_profile_detection COMMAND "${Python3_EXECUTABLE}" -B "${PGR1_ROOT}/portable/tests/test_cpu_info.py")
+    add_test(NAME vk_texture_tracker_report COMMAND "${Python3_EXECUTABLE}" -B "${PGR1_ROOT}/portable/tests/texture_report_tests.py")
+    add_test(NAME vk_capture_comparison_report COMMAND "${Python3_EXECUTABLE}" -B "${PGR1_ROOT}/portable/tests/compare_capture_tests.py")
   endif()
   add_executable(pgr1_vk_guest_frame_test test_vk_guest_frame.cpp vk_guest_frame.cpp)
   target_compile_options(pgr1_vk_guest_frame_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
@@ -212,6 +223,12 @@ if(BUILD_TESTING)
     target_link_libraries(pgr1_vk_backend_test PRIVATE Threads::Threads)
     add_test(NAME vk_sdk_backend_capture COMMAND pgr1_vk_backend_test)
     set_tests_properties(vk_sdk_backend_capture PROPERTIES TIMEOUT 90)
+    add_test(NAME vk_sdk_backend_capture_audit COMMAND pgr1_vk_backend_test)
+    set_tests_properties(vk_sdk_backend_capture_audit PROPERTIES TIMEOUT 90
+      ENVIRONMENT "PGR1_VK_TEXTURE_COHERENCY=audit")
+    add_test(NAME vk_sdk_backend_capture_tracked_fallback COMMAND pgr1_vk_backend_test)
+    set_tests_properties(vk_sdk_backend_capture_tracked_fallback PROPERTIES TIMEOUT 90
+      ENVIRONMENT "PGR1_VK_TEXTURE_COHERENCY=tracked;PGR1_VK_TEXTURE_DIAGNOSTIC=skip-exact")
   endif()
 endif()
 

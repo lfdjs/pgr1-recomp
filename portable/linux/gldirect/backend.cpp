@@ -34,9 +34,12 @@
 #include "texture_cache_policy.h"
 #ifdef PGR1_NATIVE_VULKAN
 #include "texture_compare_worker.h"
+#include "texture_coherency.h"
+#include "kernel/memory.h"
 #endif
 #include "vertex_register_expand.h"
 #include "vertex_program_cache.h"
+#include "flat_primitive_indices.h"
 #include <cstdlib>
 #include <array>
 
@@ -110,6 +113,7 @@ class GLBackend final : public Backend {
 #endif
     void SubmitFrame() {
 #ifdef PGR1_NATIVE_VULKAN
+        CollectTrackerStats();
         Completion();
 #endif
         Submit(std::move(frame_)); frame_={};
@@ -124,8 +128,60 @@ class GLBackend final : public Backend {
     std::unordered_map<uint32_t,uint64_t> gpu_epoch_;
     struct LateRead { TextureDesc desc; std::future<std::vector<uint32_t>> future; };
     std::map<uint32_t,LateRead> late_;
-    static void WritePixels(uint32_t address,const TextureDesc& desc,const std::vector<uint32_t>& pixels) {
+#ifdef PGR1_NATIVE_VULKAN
+    using MemoryTracker=pgr::memory::GuestMemoryTracker;
+    MemoryTracker texture_tracker_{{{mem::kContiguousBase,mem::kWriteCombineBase},mem::kMappedPhysical,mem::kPage}};
+    TextureCoherency texture_coherency_=TextureCoherency::Exact;
+    MemoryTracker::Stats tracker_reported_{};
+    bool Tracking() const { return texture_coherency_!=TextureCoherency::Exact; }
+    void CollectTrackerStats() {
+        if(!Tracking()) return;
+        const auto begin=std::chrono::steady_clock::now();
+        const auto stats=texture_tracker_.GetStats();
+        frame_.texture_tracker_monitored_writes+=stats.monitored_writes-tracker_reported_.monitored_writes;
+        frame_.texture_tracker_dirty_pages+=stats.dirty_pages-tracker_reported_.dirty_pages;
+        frame_.texture_tracker_write_ns+=stats.write_ns-tracker_reported_.write_ns;
+        frame_.texture_tracker_tracked_bytes=std::max(frame_.texture_tracker_tracked_bytes,stats.tracked_bytes);
+        tracker_reported_=stats;
+        frame_.texture_tracker_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now()-begin).count();
+    }
+    void InvalidateTextureMemory(uint32_t address,std::size_t bytes) {
+        if(!Tracking())return;
+        const auto begin=std::chrono::steady_clock::now();
+        texture_tracker_.InvalidateRange(address,bytes);
+        frame_.texture_tracker_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now()-begin).count();
+        CollectTrackerStats();
+    }
+#endif
+    void MarkGpuWritten(uint32_t address) {
+        const bool new_authority=gpu_written_.insert(address).second;
+        const bool new_unread=unread_.insert(address).second;
+        gpu_epoch_[address]=DirtyEpoch(address);
+#ifdef PGR1_NATIVE_VULKAN
+        // EN: GPU draws do not mutate CPU bytes. Revoke CPU proof when GPU
+        //     authority begins, then again after a readback makes it clean.
+        //     Every new guest registration is Unknown, including overlaps.
+        // PT-BR: Draws GPU não alteram bytes CPU. Revogue a prova ao iniciar
+        //        autoridade GPU e novamente após readback tornar a faixa limpa.
+        //        Todo novo registro guest é Unknown, inclusive sobreposições.
+        if(Tracking() && (new_authority || new_unread))
+            InvalidateTextureMemory(address,TotalSize(targets_.at(address).first));
+#else
+        (void)new_authority; (void)new_unread;
+#endif
+    }
+    void WritePixels(uint32_t address,const TextureDesc& desc,const std::vector<uint32_t>& pixels) {
             if(pixels.size()!=size_t(desc.width)*desc.height) throw std::runtime_error("GPU readback size mismatch");
+#ifdef PGR1_NATIVE_VULKAN
+            // EN: Only this known writer joins the domain. Other SDK writers
+            //     remain uncovered; this guard does not authorize guest hits.
+            // PT-BR: Só este escritor conhecido participa do domínio. Outros
+            //        escritores SDK seguem descobertos; isto não autoriza hits guest.
+            std::optional<MemoryTracker::WriteGuard> write;
+            if(Tracking()) write.emplace(texture_tracker_,address,TotalSize(desc));
+#endif
             for(unsigned y=0;y<desc.height;y++) for(unsigned x=0;x<desc.width;x++) {
 #ifdef PGR1_NATIVE_VULKAN
                 const auto pixel=pixels.at(size_t(y)*desc.width+x);
@@ -162,6 +218,10 @@ class GLBackend final : public Backend {
         // including direct CPU writes made without Lock/MarkDirty in this frame.
         std::vector<uint8_t> guest;
         uint64_t used=0;
+#ifdef PGR1_NATIVE_VULKAN
+        MemoryTracker::Handle tracked_range=0;
+        MemoryTracker::Stamp tracked_stamp{};
+#endif
     };
     std::unordered_map<uint32_t,CachedPixels> textures_;
     uint64_t texture_clock_=0;
@@ -208,7 +268,13 @@ public:
         // EN: Deliberately incorrect ceiling experiment, never a coherency mode.
         // PT-BR: Experimento de teto deliberadamente incorreto, nunca um modo de coerência.
         const char* diagnostic=std::getenv("PGR1_VK_TEXTURE_DIAGNOSTIC");
-        skip_exact_diagnostic_=diagnostic && std::strcmp(diagnostic,"skip-exact")==0;
+        const char* coherency=std::getenv("PGR1_VK_TEXTURE_COHERENCY");
+        texture_coherency_=ParseTextureCoherency(coherency);
+        skip_exact_diagnostic_=!Tracking() && diagnostic && std::strcmp(diagnostic,"skip-exact")==0;
+        if(Tracking() && diagnostic && std::strcmp(diagnostic,"skip-exact")==0)
+            LOGR("vulkan-capture: audit/tracked require exact fallback; unsafe option ignored / audit/tracked exigem fallback exato; opção insegura ignorada");
+        LOGR("vulkan-capture: texture coherency / coerência de texturas = %s; pinned SDK coverage unknown / cobertura do SDK fixado desconhecida",
+            texture_coherency_==TextureCoherency::Audit?"audit":texture_coherency_==TextureCoherency::Tracked?"tracked (experimental)":"exact");
         if(skip_exact_diagnostic_)
             LOGR("WARNING / AVISO: UNSAFE texture diagnostic skip-exact; stale textures possible; NOT correctness validation");
         if(!skip_exact_diagnostic_ && overlap && std::strcmp(overlap,"1")==0)
@@ -234,8 +300,8 @@ public:
         c.flags=flags; c.color=color; c.z=z; c.stencil=stencil;
         if(n && rects) for(uint32_t i=0;i<n;i++) { uint32_t r[4]; std::memcpy(r,rects+i*16,16); c.rects.push_back(Rectangle(r)); }
         if(c.rects.empty()) c.rects.push_back({int(s.viewport.x),int(s.viewport.y),int(s.viewport.w),int(s.viewport.h)});
-        gpu_written_.insert(c.target.color); unread_.insert(c.target.color); gpu_epoch_[c.target.color]=DirtyEpoch(c.target.color);
-        if(c.target.depth) { gpu_written_.insert(c.target.depth); unread_.insert(c.target.depth); gpu_epoch_[c.target.depth]=DirtyEpoch(c.target.depth); }
+        MarkGpuWritten(c.target.color);
+        if(c.target.depth)MarkGpuWritten(c.target.depth);
         frame_.commands.push_back(std::move(c));
 #ifdef PGR1_NATIVE_VULKAN
         Use(s.rt.header); Use(s.zs.header);
@@ -389,6 +455,14 @@ public:
                 // Evict one least recently bound snapshot, not the whole scene.
                 // Commands retain shared ownership until the GPU consumes them.
                 auto oldest=std::min_element(textures_.begin(),textures_.end(),[](const auto& a,const auto& b) { return a.second.used<b.second.used; });
+#ifdef PGR1_NATIVE_VULKAN
+                if(Tracking()) {
+                    const auto begin=std::chrono::steady_clock::now();
+                    texture_tracker_.UnregisterRange(oldest->second.tracked_range);
+                    frame_.texture_tracker_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now()-begin).count();
+                }
+#endif
                 textures_.erase(oldest);
             }
             auto& cached=textures_[d.data];
@@ -409,10 +483,36 @@ public:
             bool changed=!metadata_same;
             std::int64_t overlapped_assembly_ns=0;
 #ifdef PGR1_NATIVE_VULKAN
-            if(metadata_same && skip_exact_diagnostic_) {
-                // EN: Measure the ceiling only; may retain stale pixels.
-                // PT-BR: Mede apenas o teto; pode manter pixels desatualizados.
-                ++frame_.texture_diagnostic_skips;
+            std::optional<MemoryTracker::ReadGuard> tracked_read;
+            MemoryTracker::Prediction prediction;
+            if(Tracking()) {
+                const auto begin=std::chrono::steady_clock::now();
+                if(!metadata_same) {
+                    texture_tracker_.UnregisterRange(cached.tracked_range);
+                    // EN: No guest writer coverage is claimed by the pinned SDK.
+                    // PT-BR: O SDK fixado não comprova cobertura dos escritores guest.
+                    cached.tracked_range=texture_tracker_.RegisterRange(d.data,bytes);
+                    cached.tracked_stamp={};
+                }
+                tracked_read.emplace(texture_tracker_);
+                prediction=tracked_read->IsUnchanged(cached.tracked_range,cached.tracked_stamp);
+                ++frame_.texture_tracker_queries;
+                if(prediction.covered) ++frame_.texture_tracker_covered_queries;
+                else ++frame_.texture_tracker_uncovered_ranges;
+                if(metadata_same && prediction.registered && !prediction.advisory_unchanged)
+                    ++frame_.texture_tracker_invalidations;
+                frame_.texture_tracker_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now()-begin).count();
+            }
+            const bool tracked_hit=metadata_same && texture_coherency_==TextureCoherency::Tracked && prediction.CanReuse();
+            if(tracked_hit) ++frame_.texture_tracker_fast_hits;
+            else if(metadata_same && Tracking()) ++frame_.texture_tracker_exact_fallbacks;
+            if(metadata_same && (skip_exact_diagnostic_ || tracked_hit)) {
+                // EN: Proven hits require coverage; only the separate unsafe
+                //     diagnostic deliberately bypasses proof of byte equality.
+                // PT-BR: Hits comprovados exigem cobertura; só o diagnóstico
+                //        inseguro separado omite a prova de igualdade dos bytes.
+                if(skip_exact_diagnostic_)++frame_.texture_diagnostic_skips;
             } else
 #endif
             if(metadata_same) {
@@ -432,6 +532,15 @@ public:
 #endif
                     changed=std::memcmp(guest,cached.guest.data(),bytes)!=0;
             }
+#ifdef PGR1_NATIVE_VULKAN
+            if(Tracking() && metadata_same && !tracked_hit) {
+                const auto audit=AuditTexturePrediction(prediction,changed);
+                frame_.texture_tracker_false_positives+=audit.false_positive;
+                frame_.texture_tracker_false_negatives+=audit.false_negative;
+                if(audit.false_negative && warned_.insert("texture tracker missed write").second)
+                    LOGR("vulkan-capture: advisory tracker missed guest bytes; exact fallback preserved / tracker informativo não detectou escrita guest; fallback exato preservado");
+            }
+#endif
             // EN: Do not charge assembly twice when work overlaps.
             // PT-BR: Não contabilize a montagem duas vezes na sobreposição.
             frame_.texture_check_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -477,6 +586,19 @@ public:
                 ++frame_.texture_decodes;
                 frame_.decode_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-decode_start).count();
             }
+#ifdef PGR1_NATIVE_VULKAN
+            if(tracked_read) {
+                const auto begin=std::chrono::steady_clock::now();
+                // EN: Publish the stamp with the owned snapshot under the same
+                //     read guard. Unknown coverage still requires exact next draw.
+                // PT-BR: Publique stamp e snapshot próprio sob a mesma guarda.
+                //        Sem cobertura, o próximo draw ainda compara todos os bytes.
+                cached.tracked_stamp=tracked_read->CaptureGeneration(cached.tracked_range);
+                tracked_read.reset();
+                frame_.texture_tracker_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now()-begin).count();
+            }
+#endif
             t.pixels=cached.pixels;
             verified_this_draw[verified_count++]={signature,t.pixels};
         }
@@ -549,36 +671,15 @@ public:
             const auto attrs=expander.Expand(a.vertices.data()+size_t(i)*stride);
             auto& o=c.vertices[i]; o={attrs[0],attrs[3],attrs[9],attrs};
         }
-        c.indices=a.indices;
-        if(a.index_count && c.indices.size()!=a.index_count) { Unsupported("unexpected assembler index path"); return; }
+        if(a.index_count && a.indices.size()!=a.index_count) { Unsupported("unexpected assembler index path"); return; }
         c.topology=a.topology==Topology::Points ? 0 : a.topology==Topology::Lines ? (a.strip?3:1) : (a.strip?5:4);
 #ifdef PGR1_NATIVE_VULKAN
         if(pk.flat && c.topology!=0) {
-            // Xbox/GL flat colors come from the last primitive vertex. Vulkan
-            // 1.0 chooses the first. Rotate complete primitives without changing
-            // winding instead of requiring VK_EXT_provoking_vertex.
-            auto input=std::move(c.indices);
-            if(input.empty()) for(uint32_t i=0;i<c.vertices.size();i++) input.push_back(i);
-            c.indices.clear();
-            if(c.topology==5) {
-                for(size_t i=0;i+2<input.size();i++) {
-                    c.indices.push_back(input[i+2]);
-                    c.indices.push_back(input[i+(i&1)]);
-                    c.indices.push_back(input[i+1-(i&1)]);
-                }
-                c.topology=4;
-            } else if(c.topology==3) {
-                for(size_t i=0;i+1<input.size();i++) { c.indices.push_back(input[i+1]); c.indices.push_back(input[i]); }
-                c.topology=1;
-            } else {
-                const size_t step=c.topology==4?3:2;
-                for(size_t i=0;i+step<=input.size();i+=step) {
-                    c.indices.push_back(input[i+step-1]);
-                    for(size_t j=0;j+1<step;j++) c.indices.push_back(input[i+j]);
-                }
-            }
-        }
+            auto flat=BuildFlatPrimitiveIndices(c.topology,a.vertex_count,a.indices);
+            c.topology=flat.topology; c.indices=std::move(flat.indices);
+        } else
 #endif
+            c.indices=a.indices;
 #ifdef PGR1_NATIVE_VULKAN
         std::shared_future<uint64_t> visibility;
         if(s.simple[kMCountEnable/4]) {
@@ -586,8 +687,8 @@ public:
             visibility=c.visibility->get_future().share();
         }
 #endif
-        gpu_written_.insert(c.target.color); unread_.insert(c.target.color); gpu_epoch_[c.target.color]=DirtyEpoch(c.target.color);
-        if(c.target.depth) { gpu_written_.insert(c.target.depth); unread_.insert(c.target.depth); gpu_epoch_[c.target.depth]=DirtyEpoch(c.target.depth); }
+        MarkGpuWritten(c.target.color);
+        if(c.target.depth)MarkGpuWritten(c.target.depth);
         frame_.commands.push_back(std::move(c));
         timer.supported=true;
 #ifdef PGR1_NATIVE_VULKAN
@@ -627,7 +728,13 @@ public:
 #endif
         TextureDesc a,b;
         if(!DescribeSurface(src,a) || !DescribeSurface(dst,b)) { Unsupported("CopyRects surface"); return; }
-        if(!gpu_written_.contains(a.data)) { CopySurfaceMemory(src,dst,n,r,p); return; }
+        if(!gpu_written_.contains(a.data)) {
+#ifdef PGR1_NATIVE_VULKAN
+            std::optional<MemoryTracker::WriteGuard> write;
+            if(Tracking())write.emplace(texture_tracker_,b.data,TotalSize(b));
+#endif
+            CopySurfaceMemory(src,dst,n,r,p); return;
+        }
         if(a.data==b.data) { Unsupported("overlapping GPU CopyRects"); return; }
         Command c; c.kind=Command::Kind::Copy; c.source=a.data; c.source_height=a.height;
         c.target={b.data,0,b.width,b.height,b.format==0x07 || b.format==0x1e || b.format==0x11 || b.format==0x05};
@@ -638,7 +745,7 @@ public:
             c.rects.push_back(source); c.destination_rects.push_back({x,y,source.w,source.h});
         }
         c.target.format=b.format;
-        targets_[b.data]={b,c.target}; gpu_written_.insert(b.data); unread_.insert(b.data); gpu_epoch_[b.data]=DirtyEpoch(b.data); frame_.commands.push_back(std::move(c));
+        targets_[b.data]={b,c.target}; MarkGpuWritten(b.data); frame_.commands.push_back(std::move(c));
 #ifdef PGR1_NATIVE_VULKAN
         Use(src.header); Use(dst.header);
 #endif

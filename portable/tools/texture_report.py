@@ -6,6 +6,7 @@ Example / Exemplo: python3 portable/tools/texture_report.py .local/run/vulkan --
 """
 import argparse
 import csv
+import math
 from pathlib import Path
 import statistics
 import sys
@@ -23,6 +24,16 @@ MIP_COUNTS = ("texture_mip_levels_decoded", "texture_mip_levels_reused")
 CACHE_COUNTS = ("texture_cache_evictions", "texture_cache_misses",
                 "texture_descriptor_redecodes", "texture_guest_redecodes",
                 "texture_cache_entries_peak")
+# EN: 04D.19 optional columns; predictions also include uncovered observations.
+# PT-BR: Colunas opcionais 04D.19; previsões incluem observações sem cobertura.
+TRACKER_COUNTS = (
+    "texture_tracker_queries", "texture_tracker_fast_hits", "texture_tracker_invalidations",
+    "texture_tracker_exact_fallbacks", "texture_tracker_uncovered_ranges",
+    "texture_tracker_false_positives", "texture_tracker_false_negatives",
+    "texture_tracker_monitored_writes", "texture_tracker_dirty_pages",
+    "texture_tracker_tracked_bytes", "texture_tracker_covered_queries",
+)
+TRACKER_TIMES = ("texture_tracker_ms", "texture_tracker_write_ms")
 
 
 def read_frames(path: Path, after: int = 0, before: int | None = None):
@@ -50,14 +61,23 @@ def read_frames(path: Path, after: int = 0, before: int | None = None):
                     raise ValueError("non-finite metric")
                 if counts["texture_same_draw_reuses"] > counts["texture_static_binds"]:
                     raise ValueError("reuse exceeds static binds")
-                optional = {key: int(row[key]) for key in (*MIP_COUNTS, *CACHE_COUNTS, "texture_overlap_checks", "texture_diagnostic_skips") if key in fields}
+                optional = {key: int(row[key]) for key in (*MIP_COUNTS, *CACHE_COUNTS, *TRACKER_COUNTS,
+                            "texture_overlap_checks", "texture_diagnostic_skips") if key in fields}
+                optional_times = {key: float(row[key]) for key in TRACKER_TIMES if key in fields}
+                if any(not math.isfinite(value) for value in optional_times.values()):
+                    raise ValueError("non-finite tracker time")
+                if any(value < 0 for value in optional_times.values()):
+                    raise ValueError("negative tracker time")
+                for key in ("texture_tracker_covered_queries", "texture_tracker_fast_hits"):
+                    if key in optional and "texture_tracker_queries" in optional and optional[key] > optional["texture_tracker_queries"]:
+                        raise ValueError(f"{key} exceeds tracker queries")
                 if any(value < 0 for value in optional.values()):
-                    raise ValueError("negative mip counter")
+                    raise ValueError("negative optional counter")
             except (TypeError, ValueError) as exc:
                 errors.append(f"line {lineno}: {exc}")
                 continue
             if frame > after and (before is None or frame < before):
-                records.append({"frame": frame, **counts, **times, **optional})
+                records.append({"frame": frame, **counts, **times, **optional, **optional_times})
     return records, errors
 
 
@@ -111,7 +131,39 @@ def report(rows, name="Selected frames"):
               f"peak entries/pico de entradas={peak:,}")
         if cold+layout+guest != total["texture_decodes"]:
             print("  WARNING / AVISO: decode reasons differ from texture_decodes")
-    for key in TIMES:
+    if all(key in rows[0] for key in TRACKER_COUNTS):
+        tracker = {key: sum(row[key] for row in rows) for key in TRACKER_COUNTS}
+        queries = tracker["texture_tracker_queries"]
+        covered = tracker["texture_tracker_covered_queries"]
+        hits = tracker["texture_tracker_fast_hits"]
+        exact = total["texture_memcmp_checks"]
+        print(f"  Tracker / Rastreador: queries/consultas={queries:,}; "
+              f"covered/com cobertura={covered:,} ({100*covered/max(queries,1):.2f}%); "
+              f"uncovered observations/observações sem cobertura={tracker['texture_tracker_uncovered_ranges']:,}")
+        print(f"  Proven fast hits / Acertos comprovados={hits:,} "
+              f"({100*hits/max(queries,1):.2f}% of queries/das consultas); "
+              f"exact fallbacks/fallbacks exatos={tracker['texture_tracker_exact_fallbacks']:,}; "
+              f"predicted invalidations/invalidações previstas={tracker['texture_tracker_invalidations']:,}")
+        print(f"  Comparisons avoided by proof / Comparações evitadas por prova: {hits:,} "
+              f"({100*hits/max(hits+exact,1):.2f}% of exact+proven checks/das verificações exatas+comprovadas)")
+        print(f"  Advisory prediction errors / Erros de previsão consultiva: "
+              f"false positives/falsos positivos={tracker['texture_tracker_false_positives']:,}; "
+              f"false negatives/falsos negativos={tracker['texture_tracker_false_negatives']:,}")
+        print("  EN/PT-BR: Errors include uncovered predictions; zero errors does not prove writer coverage / "
+              "Erros incluem previsões sem cobertura; zero erros não comprova cobertura dos escritores.")
+        peak = max(row["texture_tracker_tracked_bytes"] for row in rows)
+        print(f"  Monitored writes / Escritas monitoradas={tracker['texture_tracker_monitored_writes']:,}; "
+              f"dirty-page visits/visitas a páginas sujas={tracker['texture_tracker_dirty_pages']:,} "
+              f"(upper bound, repeated pages/limite superior, páginas repetidas); "
+              f"peak registered bytes/pico de bytes registrados={peak:,} ({peak/1048576:.2f} MiB)")
+    if all(key in rows[0] for key in TRACKER_TIMES):
+        combined = [sum(row[key] for key in TRACKER_TIMES) for row in rows]
+        print(f"  Tracker reader+writer cost / Custo leitor+escritor: "
+              f"mean/média {statistics.mean(combined):.3f} ms/frame; "
+              f"total {sum(combined):.3f} ms")
+        print("  EN/PT-BR: Tracker times may nest in capture/check times; do not add them again / "
+              "Tempos do tracker podem estar na captura/verificação; não os some novamente.")
+    for key in (*TIMES, *(key for key in TRACKER_TIMES if key in rows[0])):
         nums = [row[key] for row in rows]
         print(f"  {key}: mean {statistics.mean(nums):.3f} ms; P95 {percentile(nums, 0.95):.3f} ms; "
               f"P99 {percentile(nums, 0.99):.3f} ms")

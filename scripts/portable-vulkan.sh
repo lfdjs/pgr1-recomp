@@ -167,6 +167,9 @@ Run options: PGR1_RUN_SECONDS=60 OUTPUT=1280x720 PGR1_FULLSCREEN=0 PGR1_CAPTURE=
              PGR1_VK_PIPELINED=0 # diagnostic: restore per-submission GPU fence wait
              PGR1_VK_SHADER_WORKERS=1 # diagnostic: single shader worker
              PGR1_VK_TEXTURE_OVERLAP=1 # experimental / experimental: exact compare + vertex assembly
+             PGR1_VK_TEXTURE_COHERENCY=exact # default / padrão; full byte comparison / comparação completa
+             PGR1_VK_TEXTURE_COHERENCY=audit # advisory predictions + exact pixels / previsões + pixels exatos
+             PGR1_VK_TEXTURE_COHERENCY=tracked # experimental; pinned SDK uses exact fallback / SDK fixado usa fallback exato
              PGR1_VK_TEXTURE_DIAGNOSTIC=skip-exact # UNSAFE / INSEGURO: benchmark only, stale textures
              PGR1_VK_BATCH_EXTERNAL=0 # EN/PT-BR: disable external-source batching / desativar agrupamento de origens externas
              # PT-BR: 0 restaura a espera sincrona em cada submissao

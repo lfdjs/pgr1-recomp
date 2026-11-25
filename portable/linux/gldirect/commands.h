@@ -94,6 +94,17 @@ struct Submission {
     std::uint64_t texture_overlap_checks=0;
     // EN/PT-BR: Unsafe benchmark only / Apenas benchmark inseguro.
     std::uint64_t texture_diagnostic_skips=0;
+    // EN: Advisory predictions never authorize reuse without writer coverage.
+    // PT-BR: Previsões consultivas só autorizam reuso com cobertura dos escritores.
+    std::uint64_t texture_tracker_queries=0, texture_tracker_fast_hits=0,
+        texture_tracker_invalidations=0, texture_tracker_exact_fallbacks=0,
+        texture_tracker_uncovered_ranges=0, texture_tracker_false_positives=0,
+        texture_tracker_false_negatives=0, texture_tracker_monitored_writes=0,
+        texture_tracker_dirty_pages=0, texture_tracker_covered_queries=0;
+    // EN: Residency uses peak bytes; writer/reader costs are separate and may nest in capture.
+    // PT-BR: Ocupação usa pico de bytes; custos de escrita/leitura podem estar na captura.
+    std::uint64_t texture_tracker_tracked_bytes=0, texture_tracker_ns=0,
+        texture_tracker_write_ns=0;
     std::uint32_t front=0;
     bool present=true;
     std::uint32_t reference_width=0, reference_height=0;

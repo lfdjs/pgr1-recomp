@@ -8,12 +8,18 @@
 #include "app/app.h"
 #include <cassert>
 #include <bit>
-#include <bit>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 #include <thread>
 #include <cstdlib>
+#if defined(PGR1_NATIVE_VULKAN) && defined(__linux__) && UINTPTR_MAX > UINT32_MAX
+#include "kernel/memory.h"
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 namespace { std::vector<uint8_t> memory(1<<20); }
 namespace kernel { uint8_t* g_base=memory.data(); }
 namespace mem {
@@ -23,9 +29,139 @@ uint32_t VirtualFromPhysical(uint32_t pa) { return pa; }
 namespace app { const GameInfo kGame{}; float FrameAspect() { return 4.0f/3; } Settings& Get() { static Settings s; return s; } }
 namespace logx { void Write(Level,const char*,...) {} }
 using namespace pgr::gldirect;
+#ifdef PGR1_NATIVE_VULKAN
+namespace {
+class ScopedEnvironment {
+    const char* name_;
+    bool present_;
+    std::string previous_;
+public:
+    ScopedEnvironment(const char* name,const char* value):name_(name),present_(std::getenv(name)!=nullptr),
+        previous_(present_?std::getenv(name):"") { setenv(name_,value,1); }
+    ~ScopedEnvironment() { if(present_)setenv(name_,previous_.c_str(),1); else unsetenv(name_); }
+};
+#if defined(__linux__) && UINTPTR_MAX > UINT32_MAX
+class AliasedGuestMemory {
+    static constexpr std::size_t kGuestBytes=std::size_t{1}<<32;
+    uint8_t* previous_=kernel::g_base;
+    uint8_t* mapped_=nullptr;
+public:
+    AliasedGuestMemory() {
+        // EN: Match the SDK's shared physical backing, including host RAM.
+        //     The low synthetic headers/vertices retain their original layout.
+        // PT-BR: Reproduza o backing físico compartilhado do SDK, incluindo RAM
+        //        host. Headers/vértices sintéticos baixos mantêm seu layout.
+        void* reserved=mmap(nullptr,kGuestBytes,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,-1,0);
+        assert(reserved!=MAP_FAILED);
+        mapped_=static_cast<uint8_t*>(reserved);
+        assert(mprotect(mapped_,memory.size(),PROT_READ|PROT_WRITE)==0);
+        std::memcpy(mapped_,previous_,memory.size());
+        const int fd=static_cast<int>(syscall(SYS_memfd_create,"pgr1-backend-aliases",0));
+        assert(fd>=0 && ftruncate(fd,mem::kMappedPhysical)==0);
+        for(uint32_t alias:{mem::kContiguousBase,mem::kWriteCombineBase}) {
+            void* view=mmap(mapped_+alias,mem::kMappedPhysical,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_FIXED,fd,0);
+            assert(view==mapped_+alias);
+        }
+        close(fd);
+        kernel::g_base=mapped_;
+    }
+    ~AliasedGuestMemory() { kernel::g_base=previous_; assert(munmap(mapped_,kGuestBytes)==0); }
+    AliasedGuestMemory(const AliasedGuestMemory&)=delete;
+    AliasedGuestMemory& operator=(const AliasedGuestMemory&)=delete;
+};
+
+void TestAliasedTextureCoherency() {
+    AliasedGuestMemory guest;
+    constexpr uint32_t data=mem::kContiguousBase+0x40000;
+    constexpr uint32_t alias=mem::kWriteCombineBase+0x40000;
+    auto header=[](uint32_t h,uint32_t address) {
+        kernel::W32(h,0x40000); kernel::W32(h+4,address);
+        kernel::W32(h+12,0x12u<<8); kernel::W32(h+16,31u|(31u<<12)|(1u<<24));
+    };
+    gpu::State state;
+    state.rt={0x1000,0x10000}; state.zs={0x1100,0x20000};
+    state.viewport={0,0,32,32,0,1}; state.vs_handle=0x44;
+    state.streams[0]={0x1200,20};
+    for(auto& stage:state.tss)stage[gpu::kTssColorOp]=1;
+    state.simple[gpu::kMColorWriteEnable/4]=0x01010101;
+    state.simple[gpu::kMZFunc/4]=0x201;
+    auto& texture=state.tss[0];
+    texture[gpu::kTssColorOp]=texture[gpu::kTssAlphaOp]=4;
+    texture[gpu::kTssColorArg1]=texture[gpu::kTssAlphaArg1]=2;
+    texture[gpu::kTssAddressU]=texture[gpu::kTssAddressV]=3;
+    texture[gpu::kTssMinFilter]=texture[gpu::kTssMagFilter]=1;
+    for(const char* mode:{"audit","tracked"}) {
+        ScopedEnvironment coherency("PGR1_VK_TEXTURE_COHERENCY",mode);
+        ScopedEnvironment diagnostic("PGR1_VK_TEXTURE_DIAGNOSTIC","skip-exact");
+        auto backend=gpu::CreateBackend(); assert(backend->Init(32,32));
+        state.textures[0]=0x1300; header(0x1300,data);
+        for(unsigned i=0;i<1024;++i)kernel::W32(data+i*4,0xff123456);
+        assert(kernel::R32(alias)==0xff123456);
+        // EN: No MarkDirty/notification; both aliases must still trigger exact
+        //     decoding within one frame. Unknown coverage never permits reuse.
+        // PT-BR: Sem MarkDirty/notificação; ambos aliases ainda exigem decode
+        //        exato no mesmo frame. Cobertura desconhecida não permite reuse.
+        backend->Draw(state,8,0,4,nullptr);
+        kernel::W32(alias+17*4,0xfffedcba);
+        backend->Draw(state,8,0,4,nullptr);
+        kernel::W32(data+1023*4,0xff654321);
+        backend->Draw(state,8,0,4,nullptr);
+        backend->Present(state.rt);
+        Submission captured; assert(Take(captured));
+        assert(captured.commands.size()==3 && captured.unsupported==0);
+        assert(captured.texture_memcmp_checks==2 && captured.texture_diagnostic_skips==0);
+        assert(captured.texture_tracker_queries==3 && captured.texture_tracker_uncovered_ranges==3);
+        assert(captured.texture_tracker_fast_hits==0 && captured.texture_tracker_covered_queries==0);
+        assert(captured.texture_tracker_exact_fallbacks==2 && captured.texture_tracker_false_negatives==2);
+        const auto first=captured.commands[0].textures[0].pixels;
+        const auto second=captured.commands[1].textures[0].pixels;
+        const auto third=captured.commands[2].textures[0].pixels;
+        assert(first->levels[0][17]==0xff123456 && first->levels[0][1023]==0xff123456);
+        assert(second->levels[0][17]==0xfffedcba && second->levels[0][1023]==0xff123456);
+        assert(third->levels[0][17]==0xfffedcba && third->levels[0][1023]==0xff654321);
+        assert(kernel::R32(alias+1023*4)==0xff654321);
+        backend->Draw(state,8,0,4,nullptr); backend->Present(state.rt); assert(Take(captured));
+        assert(captured.commands[0].textures[0].pixels==third);
+        assert(captured.texture_memcmp_checks==1 && captured.texture_tracker_exact_fallbacks==1);
+        assert(captured.texture_tracker_false_negatives==0 && captured.texture_tracker_fast_hits==0);
+
+        // EN: A CPU texture overlaps a GPU target without sharing its start.
+        //     Readback must invalidate it and publish through both aliases.
+        // PT-BR: Textura CPU sobrepõe target GPU com início diferente.
+        //        Readback invalida-a e publica os bytes pelos dois aliases.
+        header(0x1400,data+128); state.textures[0]=0x1400;
+        backend->Draw(state,8,0,4,nullptr); backend->Present(state.rt); assert(Take(captured));
+        const auto before_readback=captured.commands[0].textures[0].pixels;
+        header(0x1500,data);
+        auto writer=state; writer.rt={0x1500,data}; writer.zs={};
+        backend->Clear(writer,0,nullptr,gpu::kClearTarget,0xff89abcd,1,0);
+        std::thread readback([&] { backend->Sync(data,0); });
+        while(!Take(captured))std::this_thread::yield();
+        assert(captured.commands.size()==2 && captured.commands.back().kind==Command::Kind::Readback);
+        captured.commands.back().readback->set_value(std::vector<uint32_t>(1024,0xff89abcd));
+        readback.join();
+        assert(kernel::R32(data)==0xff89abcd && kernel::R32(alias)==0xff89abcd);
+        backend->Draw(state,8,0,4,nullptr); backend->Present(state.rt); assert(Take(captured));
+        assert(captured.texture_memcmp_checks==1 && captured.texture_tracker_invalidations==1);
+        assert(captured.texture_tracker_monitored_writes>0 && captured.texture_tracker_dirty_pages>0);
+        assert(captured.texture_tracker_false_negatives==0 && captured.texture_tracker_fast_hits==0);
+        assert(captured.commands[0].textures[0].pixels->levels[0][0]==0xff89abcd);
+        assert(before_readback->levels[0][0]==0xff123456 && first->levels[0][17]==0xff123456);
+        // EN/PT-BR: Preserve GPU authority / Preserve a autoridade GPU.
+        state.textures[0]=0x1300;
+        backend->Draw(state,8,0,4,nullptr); backend->Present(state.rt); assert(Take(captured));
+        assert(captured.commands[0].textures[0].render_target==data);
+        assert(!captured.commands[0].textures[0].pixels && captured.texture_tracker_queries==0);
+    }
+}
+#endif
+}
+#endif
 int main() {
 #ifdef PGR1_NATIVE_VULKAN
-    unsetenv("PGR1_VK_TEXTURE_DIAGNOSTIC"); // exact regression must run in exact mode
+    const char* coherency=std::getenv("PGR1_VK_TEXTURE_COHERENCY");
+    if(!coherency || (std::strcmp(coherency,"audit")!=0 && std::strcmp(coherency,"tracked")!=0))
+        unsetenv("PGR1_VK_TEXTURE_DIAGNOSTIC");
 #endif
     auto header=[](uint32_t h,uint32_t data,uint32_t fmt) {
         kernel::W32(h,0x50000); kernel::W32(h+4,data);
@@ -263,9 +399,12 @@ int main() {
     s.simple[gpu::kMCountEnable/4]=0;
     // EN: Demonstrate why this diagnostic must never become the default.
     // PT-BR: Demonstra por que o diagnóstico nunca pode ser o padrão.
-    setenv("PGR1_VK_TEXTURE_DIAGNOSTIC","skip-exact",1);
-    auto diagnostic=gpu::CreateBackend(); assert(diagnostic->Init(32,32));
-    unsetenv("PGR1_VK_TEXTURE_DIAGNOSTIC");
+    auto diagnostic=gpu::CreateBackend();
+    {
+        ScopedEnvironment coherency("PGR1_VK_TEXTURE_COHERENCY","exact");
+        ScopedEnvironment unsafe("PGR1_VK_TEXTURE_DIAGNOSTIC","skip-exact");
+        assert(diagnostic->Init(32,32));
+    }
     header(0x1300,0x40000,0x12); kernel::W32(0x1300,0x40000);
     s.textures[0]=0x1300;
     kernel::W32(0x40000,0xff123456);
@@ -276,6 +415,9 @@ int main() {
     assert(f.commands.size()==2 && f.texture_cache_misses==1);
     assert(f.texture_diagnostic_skips==1 && f.texture_memcmp_checks==0);
     assert(f.commands[1].textures[0].pixels->levels[0][0]==0xff123456);
+#if defined(__linux__) && UINTPTR_MAX > UINT32_MAX
+    TestAliasedTextureCoherency();
+#endif
 #endif
     std::puts("SDK capture tests passed: FVF colors, quad topology, 16-bit indices, owned guest data, texture decode, unsupported shaders.");
     Stop();

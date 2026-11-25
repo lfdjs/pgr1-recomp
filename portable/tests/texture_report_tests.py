@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
+import contextlib
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -62,6 +64,79 @@ class TextureReportTests(unittest.TestCase):
             self.assertFalse(errors)
             self.assertEqual(rows[0]["texture_cache_evictions"], 2)
             self.assertEqual(rows[0]["texture_cache_entries_peak"], 512)
+
+    def tracker_csv(self, changes=None):
+        counts = {key: 0 for key in module.TRACKER_COUNTS}
+        counts.update(texture_tracker_queries=10, texture_tracker_fast_hits=4,
+                      texture_tracker_covered_queries=6, texture_tracker_exact_fallbacks=6,
+                      texture_tracker_uncovered_ranges=4, texture_tracker_invalidations=1,
+                      texture_tracker_false_positives=1, texture_tracker_false_negatives=2,
+                      texture_tracker_monitored_writes=3, texture_tracker_dirty_pages=5,
+                      texture_tracker_tracked_bytes=1048576)
+        values = {**counts, "texture_tracker_ms": 0.2, "texture_tracker_write_ms": 0.3}
+        values.update(changes or {})
+        fields = (*module.TRACKER_COUNTS, *module.TRACKER_TIMES)
+        return (HEADER.rstrip("\n") + "," + ",".join(fields) + "\n" +
+                "1,5,4,8192,1,0,1,0,5,16," + ",".join(str(values[key]) for key in fields) + "\n")
+
+    def parse_tracker(self, changes=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            file = Path(tmp) / "frames.csv"
+            file.write_text(self.tracker_csv(changes))
+            return module.read_frames(file)
+
+    def test_tracker_optional_schema_and_report(self):
+        rows, errors = self.parse_tracker()
+        self.assertFalse(errors)
+        self.assertEqual(rows[0]["texture_tracker_false_negatives"], 2)
+        self.assertEqual(rows[0]["texture_tracker_write_ms"], 0.3)
+        # EN: Residency is a peak; cost is per frame and errors remain advisory.
+        # PT-BR: Ocupação é pico; custo é por frame e erros seguem consultivos.
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            module.report([rows[0], {**rows[0], "frame": 2}])
+        text = output.getvalue()
+        self.assertIn("(60.00%)", text)
+        self.assertIn("(50.00% of exact+proven", text)
+        self.assertIn("falsos negativos=4", text)
+        self.assertIn("bytes registrados=1,048,576", text)
+        self.assertIn("mean/média 0.500 ms/frame; total 1.000 ms", text)
+        self.assertIn("zero errors does not prove writer coverage", text)
+        self.assertIn("do not add them again", text)
+
+    def test_tracker_invalid_values(self):
+        for changes in (
+                {"texture_tracker_fast_hits": -1},
+                {"texture_tracker_covered_queries": 11},
+                {"texture_tracker_fast_hits": 11},
+                {"texture_tracker_ms": -1},
+                {"texture_tracker_ms": "nan"},
+                {"texture_tracker_write_ms": "inf"},
+                {"texture_tracker_write_ms": "-inf"},
+                {"texture_tracker_queries": ""},
+                {"texture_tracker_ms": ""}):
+            with self.subTest(changes=changes):
+                rows, errors = self.parse_tracker(changes)
+                self.assertFalse(rows)
+                self.assertEqual(len(errors), 1)
+
+    def test_tracker_truncated_optional_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            file = Path(tmp) / "frames.csv"
+            text = self.tracker_csv()
+            file.write_text(text[:text.rfind(",")] + "\n")
+            rows, errors = module.read_frames(file)
+            self.assertFalse(rows)
+            self.assertEqual(len(errors), 1)
+
+    def test_legacy_report_has_no_tracker_claim(self):
+        rows, errors = self.parse("1,5,4,8192,1,0,1,0,5,16\n")
+        self.assertFalse(errors)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            module.report(rows)
+        self.assertNotIn("Tracker /", output.getvalue())
+        self.assertNotIn("texture_tracker_ms", output.getvalue())
 
     def test_old_schema_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
