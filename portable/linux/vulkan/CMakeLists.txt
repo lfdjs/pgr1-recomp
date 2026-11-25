@@ -235,6 +235,7 @@ endif()
 # The fixture stays independent of the proprietary game input and SDK. Enable
 # this target explicitly through portable-vulkan.sh build-game.
 option(PGR1_VK_BUILD_GAME "Build the recompiled PGR1 native Vulkan executable" OFF)
+option(PGR1_VK_SDK_WRITE_AUDIT "Compile optional SDK physical write attribution journal" OFF)
 if(PGR1_VK_BUILD_GAME)
   include("${CMAKE_CURRENT_LIST_DIR}/cpu_build_profile.cmake")
   set(PGR1_SDK_SOURCE_DIR "${PGR1_ROOT}/sdk" CACHE PATH "Compatible, pinned XboxXBERecomp SDK checkout")
@@ -283,5 +284,14 @@ if(PGR1_VK_BUILD_GAME)
   target_compile_definitions(pgr1_vk_game PRIVATE
     "PGR1_VK_POSTFX_VERT_SPV=\"${PGR1_POSTFX_BINARY_DIR}/postfx.vert.spv\""
     "PGR1_VK_POSTFX_FRAG_SPV=\"${PGR1_POSTFX_BINARY_DIR}/postfx.frag.spv\"")
+  if(PGR1_VK_SDK_WRITE_AUDIT)
+    if(NOT EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/kernel/physical_write_audit.h")
+      message(FATAL_ERROR "SDK write attribution requires portable/patches/sdk-97b1654-physical-write-audit.patch")
+    endif()
+    # EN: Both generated code and runtime must share the same diagnostic journal.
+    # PT-BR: Código gerado e runtime devem compartilhar o mesmo diário.
+    target_compile_definitions(pgr1_vk_generated PRIVATE XBE_PHYSICAL_WRITE_AUDIT=1)
+    target_compile_definitions(pgr1_vk_game PRIVATE XBE_PHYSICAL_WRITE_AUDIT=1)
+  endif()
   add_dependencies(pgr1_vk_game pgr1_vk_postfx_shaders)
 endif()

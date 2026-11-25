@@ -51,6 +51,9 @@ modo inseguro opt-in, revisão fixada do SDK e prova de aliases físicos.
 e tracked experimental com fallback exato integral no SDK fixado. A cobertura
 de todos os escritores guest e as metas de 30/60 FPS continuam pendentes.
 
+[Atribuição de escritores do SDK (04D.19D)](29-sdk-writer-attribution.md):
+patch opt-in, metadados de falhas e instruções de validação; cobertura ainda desconhecida.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.

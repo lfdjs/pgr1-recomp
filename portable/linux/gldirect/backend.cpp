@@ -208,6 +208,8 @@ class GLBackend final : public Backend {
     // PT-BR: Opcional até a medição no Sandy Bridge de referência.
     std::unique_ptr<TextureCompareWorker> compare_worker_;
     bool skip_exact_diagnostic_=false;
+    bool miss_trace_=false;
+    unsigned miss_trace_events_=0;
 #endif
     std::map<std::pair<uint64_t,uint64_t>,std::shared_ptr<const ShaderPair>> shaders_;
     VertexProgramCache vertex_program_cache_;
@@ -270,6 +272,14 @@ public:
         const char* diagnostic=std::getenv("PGR1_VK_TEXTURE_DIAGNOSTIC");
         const char* coherency=std::getenv("PGR1_VK_TEXTURE_COHERENCY");
         texture_coherency_=ParseTextureCoherency(coherency);
+        const char* miss_trace=std::getenv("PGR1_VK_TEXTURE_MISS_TRACE");
+        miss_trace_=texture_coherency_==TextureCoherency::Audit && miss_trace && std::strcmp(miss_trace,"1")==0;
+#ifdef XBE_PHYSICAL_WRITE_AUDIT
+        mem::PhysicalWriteAudit::Enable(miss_trace_);
+        LOGR("vulkan-capture: SDK physical write journal / diário de escritas físicas = %s",miss_trace_?"on":"off");
+#else
+        if(miss_trace_) LOGR("vulkan-capture: miss trace enabled; SDK journal not compiled / rastreio ativo; diário SDK não compilado");
+#endif
         skip_exact_diagnostic_=!Tracking() && diagnostic && std::strcmp(diagnostic,"skip-exact")==0;
         if(Tracking() && diagnostic && std::strcmp(diagnostic,"skip-exact")==0)
             LOGR("vulkan-capture: audit/tracked require exact fallback; unsafe option ignored / audit/tracked exigem fallback exato; opção insegura ignorada");
@@ -539,6 +549,31 @@ public:
                 frame_.texture_tracker_false_negatives+=audit.false_negative;
                 if(audit.false_negative && warned_.insert("texture tracker missed write").second)
                     LOGR("vulkan-capture: advisory tracker missed guest bytes; exact fallback preserved / tracker informativo não detectou escrita guest; fallback exato preservado");
+                // EN: Extra scanning only on observed misses, never on cache hits.
+                //     The last page writer is an advisory hint, not causal proof.
+                // PT-BR: Varredura extra só em falhas observadas, nunca em hits.
+                //        Último escritor da página é indício, não prova causal.
+                if(audit.false_negative && miss_trace_ && miss_trace_events_<256) {
+                    ++miss_trace_events_;
+                    const auto mismatch=std::mismatch(cached.guest.begin(),cached.guest.end(),guest);
+                    const auto offset=std::size_t(mismatch.first-cached.guest.begin());
+                    if(offset<bytes && uint64_t(d.data)+offset<=UINT32_MAX) {
+                        const uint32_t changed_address=d.data+uint32_t(offset);
+                        const auto physical=pgr::memory::Canonicalize(
+                            {{mem::kContiguousBase,mem::kWriteCombineBase},mem::kMappedPhysical,mem::kPage},changed_address,1);
+                        unsigned source=0; uint64_t sequence=0;
+#ifdef XBE_PHYSICAL_WRITE_AUDIT
+                        const auto event=mem::PhysicalWriteAudit::Read(changed_address);
+                        source=unsigned(event.source); sequence=event.sequence;
+#endif
+                        LOGR("texture-miss: frame=%llu draw=%llu guest=%08X bytes=%llu offset=%llu changed=%08X physical=%08X format=%u width=%u height=%u levels=%u last_source=%u page_sequence=%llu",
+                            (unsigned long long)(frames_+1),(unsigned long long)draws_,
+                            unsigned(d.data),(unsigned long long)bytes,(unsigned long long)offset,
+                            unsigned(changed_address),physical?unsigned(physical->offset):UINT32_MAX,
+                            unsigned(d.format),unsigned(d.width),unsigned(d.height),unsigned(d.levels),source,
+                            (unsigned long long)sequence);
+                    } else LOGR("texture-miss: no stable differing byte / sem byte divergente estável");
+                }
             }
 #endif
             // EN: Do not charge assembly twice when work overlaps.

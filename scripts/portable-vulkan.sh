@@ -24,7 +24,8 @@ configure_game() {
   cmake -S portable/linux/vulkan -B "$OUT" -DCMAKE_BUILD_TYPE=Release \
     -DPGR1_VK_BUILD_GAME=ON -DPGR1_RELEASE="$release" \
     -DPGR1_VK_CPU_PROFILE="$CPU_PROFILE" -DPGR1_VK_GUEST_OPT="$GUEST_OPT" \
-    -DPGR1_VK_CPU_SIGNATURE="$signature"
+    -DPGR1_VK_CPU_SIGNATURE="$signature" \
+    -DPGR1_VK_SDK_WRITE_AUDIT="${PGR1_VK_SDK_WRITE_AUDIT:-OFF}"
 }
 
 region() {
@@ -169,6 +170,8 @@ Run options: PGR1_RUN_SECONDS=60 OUTPUT=1280x720 PGR1_FULLSCREEN=0 PGR1_CAPTURE=
              PGR1_VK_TEXTURE_OVERLAP=1 # experimental / experimental: exact compare + vertex assembly
              PGR1_VK_TEXTURE_COHERENCY=exact # default / padrão; full byte comparison / comparação completa
              PGR1_VK_TEXTURE_COHERENCY=audit # advisory predictions + exact pixels / previsões + pixels exatos
+             PGR1_VK_TEXTURE_MISS_TRACE=1 # optional bounded miss metadata / metadados de falhas
+             PGR1_VK_SDK_WRITE_AUDIT=ON # requires patched SDK and regenerated code / exige SDK e código gerado atualizados
              PGR1_VK_TEXTURE_COHERENCY=tracked # experimental; pinned SDK uses exact fallback / SDK fixado usa fallback exato
              PGR1_VK_TEXTURE_DIAGNOSTIC=skip-exact # UNSAFE / INSEGURO: benchmark only, stale textures
              PGR1_VK_BATCH_EXTERNAL=0 # EN/PT-BR: disable external-source batching / desativar agrupamento de origens externas
