@@ -1,0 +1,397 @@
+diff --git a/runtime/cpu/x86_ops.h b/runtime/cpu/x86_ops.h
+--- a/runtime/cpu/x86_ops.h
++++ b/runtime/cpu/x86_ops.h
+@@ -7,6 +7,13 @@
+ 
+ #include "x86_context.h"
+ 
++#ifdef XBE_PHYSICAL_WRITE_AUDIT
++#include "../kernel/physical_write_audit.h"
++#define X86_AUDIT_WRITE(a,n,source) ::mem::PhysicalWriteAudit::Record((a),(n),::mem::PhysicalWriteSource::source)
++#else
++#define X86_AUDIT_WRITE(a,n,source) ((void)0)
++#endif
++
+ typedef uint16_t __attribute__((aligned(1), may_alias)) x86_u16u;
+ typedef uint32_t __attribute__((aligned(1), may_alias)) x86_u32u;
+ typedef uint64_t __attribute__((aligned(1), may_alias)) x86_u64u;
+@@ -57,6 +64,7 @@
+         uint32_t _v = (v);       \
+         ctx.esp -= 4;            \
+         X86_MEM32(ctx.esp) = _v; \
++        X86_AUDIT_WRITE(ctx.esp,4,Stack); \
+     } while (0)
+ 
+ #define X86_SAVE_FLAGS() (ctx.cf = cf, ctx.zf = zf, ctx.sf = sf, ctx.of = of, ctx.pf = pf)
+@@ -232,6 +240,7 @@
+     uint32_t bytes = n * w;
+     if (!ctx.df && (ctx.edi - ctx.esi >= bytes || ctx.edi <= ctx.esi)) {
+         std::memmove(base + ctx.edi, base + ctx.esi, bytes);
++        X86_AUDIT_WRITE(ctx.edi,bytes,String);
+         ctx.esi += bytes;
+         ctx.edi += bytes;
+         ctx.ecx = 0;
+@@ -240,6 +249,7 @@
+     int32_t d = ctx.df ? -int32_t(w) : int32_t(w);
+     for (; n; n--) {
+         std::memcpy(base + ctx.edi, base + ctx.esi, w);
++        X86_AUDIT_WRITE(ctx.edi,w,String);
+         ctx.esi += d;
+         ctx.edi += d;
+     }
+@@ -251,6 +261,7 @@
+     if (!n) return;
+     if (!ctx.df && w == 1) {
+         std::memset(base + ctx.edi, uint8_t(ctx.eax), n);
++        X86_AUDIT_WRITE(ctx.edi,n,String);
+         ctx.edi += n;
+         ctx.ecx = 0;
+         return;
+@@ -259,6 +270,7 @@
+     uint32_t v = ctx.eax;
+     for (; n; n--) {
+         std::memcpy(base + ctx.edi, &v, w);
++        X86_AUDIT_WRITE(ctx.edi,w,String);
+         ctx.edi += d;
+     }
+     ctx.ecx = 0;
+diff --git a/runtime/kernel/kernel.h b/runtime/kernel/kernel.h
+--- a/runtime/kernel/kernel.h
++++ b/runtime/kernel/kernel.h
+@@ -64,19 +64,19 @@
+     std::memcpy(&v, g_base + va, 4);
+     return v;
+ }
+-inline void W32(uint32_t va, uint32_t v) { std::memcpy(g_base + va, &v, 4); }
++inline void W32(uint32_t va, uint32_t v) { std::memcpy(g_base + va, &v, 4); X86_AUDIT_WRITE(va,4,KernelHelper); }
+ inline uint16_t R16(uint32_t va) {
+     uint16_t v;
+     std::memcpy(&v, g_base + va, 2);
+     return v;
+ }
+-inline void W16(uint32_t va, uint16_t v) { std::memcpy(g_base + va, &v, 2); }
++inline void W16(uint32_t va, uint16_t v) { std::memcpy(g_base + va, &v, 2); X86_AUDIT_WRITE(va,2,KernelHelper); }
+ inline uint64_t R64(uint32_t va) {
+     uint64_t v;
+     std::memcpy(&v, g_base + va, 8);
+     return v;
+ }
+-inline void W64(uint32_t va, uint64_t v) { std::memcpy(g_base + va, &v, 8); }
++inline void W64(uint32_t va, uint64_t v) { std::memcpy(g_base + va, &v, 8); X86_AUDIT_WRITE(va,8,KernelHelper); }
+ inline void* HostPtr(uint32_t va) { return g_base + va; }
+ 
+ // ANSI_STRING / OBJECT_STRING: USHORT Length, USHORT MaximumLength, PCHAR Buffer
+diff --git a/runtime/kernel/files.cpp b/runtime/kernel/files.cpp
+--- a/runtime/kernel/files.cpp
++++ b/runtime/kernel/files.cpp
+@@ -574,6 +574,7 @@
+             uint32_t at = pages ? R32(pages + n / 0x1000 * 8) + n % 0x1000 : buf + n;
+             uint32_t chunk = pages ? std::min(len - n, 0x1000 - n % 0x1000) : len;
+             std::memset(HostPtr(at), 0, chunk);
++            X86_AUDIT_WRITE(at,chunk,FileIO);
+             n += chunk;
+         }
+         return len;
+@@ -627,6 +628,7 @@
+         size_t done = f->entry ? MountedDisc()->Read(*f->entry, pos + n, HostPtr(at), chunk)
+                       : write  ? std::fwrite(HostPtr(at), 1, chunk, f->fp)
+                                : std::fread(HostPtr(at), 1, chunk, f->fp);
++        if (!write) X86_AUDIT_WRITE(at,done,FileIO);
+         n += uint32_t(done);
+         if (done < chunk) break;
+     }
+diff --git a/runtime/kernel/rtl.cpp b/runtime/kernel/rtl.cpp
+--- a/runtime/kernel/rtl.cpp
++++ b/runtime/kernel/rtl.cpp
+@@ -53,6 +53,7 @@
+ uint32_t Append(uint32_t d, uint32_t src, uint16_t bytes) {
+     if (Len(d) + bytes > Max(d)) return kBufferTooSmall;
+     std::memmove(HostPtr(Buf(d) + Len(d)), HostPtr(src), bytes);
++    X86_AUDIT_WRITE(Buf(d)+Len(d),bytes,RTL);
+     W16(d, uint16_t(Len(d) + bytes));
+     return kSuccess;
+ }
+@@ -98,10 +99,12 @@
+ 
+ KERNEL_EXPORT(320, RtlZeroMemory, 2) {
+     std::memset(HostPtr(a[0]), 0, a[1]);
++    X86_AUDIT_WRITE(a[0],a[1],RTL);
+     return 0;
+ }
+ KERNEL_EXPORT(284, RtlFillMemory, 3) {
+     std::memset(HostPtr(a[0]), int(a[2] & 0xFF), a[1]);
++    X86_AUDIT_WRITE(a[0],a[1],RTL);
+     return 0;
+ }
+ KERNEL_EXPORT(285, RtlFillMemoryUlong, 3) {
+@@ -110,6 +113,7 @@
+ }
+ KERNEL_EXPORT(298, RtlMoveMemory, 3) {
+     std::memmove(HostPtr(a[0]), HostPtr(a[1]), a[2]);
++    X86_AUDIT_WRITE(a[0],a[2],RTL);
+     return 0;
+ }
+ KERNEL_EXPORT(268, RtlCompareMemory, 3) {
+diff --git a/tools/recomp/codegen.cpp b/tools/recomp/codegen.cpp
+--- a/tools/recomp/codegen.cpp
++++ b/tools/recomp/codegen.cpp
+@@ -124,7 +124,11 @@
+ 
+ std::string CodeGen::Write(const ZydisDecodedOperand& o, const std::string& ea, const std::string& v) const {
+     if (o.type == ZYDIS_OPERAND_TYPE_REGISTER) return RegWrite(o.reg.value, v);
+-    if (o.type == ZYDIS_OPERAND_TYPE_MEMORY) return Mem(o.size, ea) + " = (" + CType(o.size) + ")(" + v + ");";
++    if (o.type == ZYDIS_OPERAND_TYPE_MEMORY) {
++        unsigned bytes = o.size == 8 ? 1 : o.size == 16 ? 2 : o.size == 64 ? 8 : 4;
++        return Mem(o.size, ea) + " = (" + CType(o.size) + ")(" + v + "); X86_AUDIT_WRITE(" +
++               ea + ", " + std::to_string(bytes) + ", Scalar);";
++    }
+     return "/* bad write */";
+ }
+ 
+diff --git a/tools/recomp/codegen_int.cpp b/tools/recomp/codegen_int.cpp
+--- a/tools/recomp/codegen_int.cpp
++++ b/tools/recomp/codegen_int.cpp
+@@ -63,7 +63,17 @@
+     std::string T = CType(W), S = CType(W, true);
+     auto rd = [&](int i) { return "(" + T + ")(" + Read(ops[i], ea) + ")"; };
+     auto wr = [&](int i, const std::string& v) { return Write(ops[i], ea, v); };
+-    auto emit = [&](const std::string& s) { Line(open + s + " }"); };
++    auto emit = [&](const std::string& s) {
++        // EN: Report conservative atomic attempts; bit strings use their actual a2 below.
++        // PT-BR: Registre tentativas atômicas; bit strings usam seu a2 real abaixo.
++        const bool bit_string=m==ZYDIS_MNEMONIC_BT || m==ZYDIS_MNEMONIC_BTS ||
++            m==ZYDIS_MNEMONIC_BTR || m==ZYDIS_MNEMONIC_BTC;
++        const bool atomic=mem && !bit_string && (lock || m==ZYDIS_MNEMONIC_XCHG ||
++            m==ZYDIS_MNEMONIC_CMPXCHG8B);
++        const auto audit=atomic ? F(" X86_AUDIT_WRITE(ea, %u, Atomic);",
++                                    m==ZYDIS_MNEMONIC_CMPXCHG8B?8:W/8) : std::string{};
++        Line(open + s + audit + " }");
++    };
+ 
+     // read modify write through an atomic compare exchange loop when locked
+     auto rmw = [&](const std::string& pre, const std::string& expr, const std::string& flags) {
+@@ -379,6 +389,7 @@
+                 s += F("%s a = %s; cf = (a >> n) & 1; %s = (%s)(%s);", T.c_str(), Mem(W, "a2").c_str(), Mem(W, "a2").c_str(),
+                        T.c_str(), op);
+             }
++            if (m != ZYDIS_MNEMONIC_BT) s += F(" X86_AUDIT_WRITE(a2, %u, Atomic);", W/8);
+             emit(s);
+             return true;
+         }
+@@ -418,7 +429,7 @@
+         case ZYDIS_MNEMONIC_PUSH:
+             // the stack slot follows the operand size attribute: a segment register takes 4 bytes without a 66h prefix
+             if (in.operand_width == 16 && ops[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+-                emit(F("uint16_t v = (uint16_t)(%s); ctx.esp -= 2; X86_MEM16(ctx.esp) = v;", Read(ops[0], ea).c_str()));
++                emit(F("uint16_t v = (uint16_t)(%s); ctx.esp -= 2; X86_MEM16(ctx.esp) = v; X86_AUDIT_WRITE(ctx.esp,2,Stack);", Read(ops[0], ea).c_str()));
+             } else {
+                 emit(F("uint32_t v = (uint32_t)(%s); X86_PUSH32(v);", Read(ops[0], ea).c_str()));
+             }
+@@ -540,10 +551,10 @@
+     std::string s;
+     if (!std::strcmp(kind, "movs")) {
+         if (rep) s = F("x86_rep_movs(ctx, base, %u);", w);
+-        else s = F("%s %s(ctx.edi) = %s(ctx.esi); ctx.esi += d; ctx.edi += d;", step.c_str(), M.c_str(), M.c_str());
++        else s = F("%s %s(ctx.edi) = %s(ctx.esi); X86_AUDIT_WRITE(ctx.edi,%u,String); ctx.esi += d; ctx.edi += d;", step.c_str(), M.c_str(), M.c_str(), w);
+     } else if (!std::strcmp(kind, "stos")) {
+         if (rep) s = F("x86_rep_stos(ctx, base, %u);", w);
+-        else s = F("%s %s(ctx.edi) = (%s)ctx.eax; ctx.edi += d;", step.c_str(), M.c_str(), T.c_str());
++        else s = F("%s %s(ctx.edi) = (%s)ctx.eax; X86_AUDIT_WRITE(ctx.edi,%u,String); ctx.edi += d;", step.c_str(), M.c_str(), T.c_str(), w);
+     } else if (!std::strcmp(kind, "lods")) {
+         std::string wr = w == 1 ? "ctx.eax = (ctx.eax & 0xFFFFFF00u) | v;" : w == 2 ? "ctx.eax = (ctx.eax & 0xFFFF0000u) | v;" : "ctx.eax = v;";
+         std::string body = F("%s v = %s(ctx.esi); %s ctx.esi += d;", T.c_str(), M.c_str(), wr.c_str());
+diff --git a/tools/recomp/codegen_fp.cpp b/tools/recomp/codegen_fp.cpp
+--- a/tools/recomp/codegen_fp.cpp
++++ b/tools/recomp/codegen_fp.cpp
+@@ -101,9 +101,9 @@
+             const char* pop = m == ZYDIS_MNEMONIC_FSTP ? " x87_pop(ctx);" : "";
+             if (mi >= 0) {
+                 auto& o = ops[mi];
+-                if (o.size == 32) emit(F("X86_MEMF32(ea) = (float)X87_ST(0);%s", pop));
+-                else if (o.size == 64) emit(F("X86_MEMF64(ea) = X87_ST(0);%s", pop));
+-                else emit(F("x87_store80(X86_PTR(uint8_t, ea), X87_ST(0));%s", pop));
++                if (o.size == 32) emit(F("X86_MEMF32(ea) = (float)X87_ST(0); X86_AUDIT_WRITE(ea,4,FloatingPoint);%s", pop));
++                else if (o.size == 64) emit(F("X86_MEMF64(ea) = X87_ST(0); X86_AUDIT_WRITE(ea,8,FloatingPoint);%s", pop));
++                else emit(F("x87_store80(X86_PTR(uint8_t, ea), X87_ST(0)); X86_AUDIT_WRITE(ea,10,FloatingPoint);%s", pop));
+             } else {
+                 emit(F("%s = X87_ST(0);%s", st(StIndex(ops[0])).c_str(), pop));
+             }
+@@ -118,9 +118,9 @@
+             // fcw 0xC00 sets rounding to truncate for the store
+             std::string pre = m == ZYDIS_MNEMONIC_FISTTP ? "uint16_t cw = ctx.fcw; ctx.fcw |= 0xC00; " : "";
+             std::string post = m == ZYDIS_MNEMONIC_FISTTP ? " ctx.fcw = cw;" : "";
+-            if (o.size == 16) emit(pre + "X86_MEM16(ea) = (uint16_t)x87_to_i16(ctx, " + v + ");" + post + pop);
+-            else if (o.size == 64) emit(pre + "X86_MEM64(ea) = (uint64_t)x87_to_i64(ctx, " + v + ");" + post + pop);
+-            else emit(pre + "X86_MEM32(ea) = (uint32_t)x87_to_i32(ctx, " + v + ");" + post + pop);
++            if (o.size == 16) emit(pre + "X86_MEM16(ea) = (uint16_t)x87_to_i16(ctx, " + v + "); X86_AUDIT_WRITE(ea,2,FloatingPoint);" + post + pop);
++            else if (o.size == 64) emit(pre + "X86_MEM64(ea) = (uint64_t)x87_to_i64(ctx, " + v + "); X86_AUDIT_WRITE(ea,8,FloatingPoint);" + post + pop);
++            else emit(pre + "X86_MEM32(ea) = (uint32_t)x87_to_i32(ctx, " + v + "); X86_AUDIT_WRITE(ea,4,FloatingPoint);" + post + pop);
+             return true;
+         }
+         case ZYDIS_MNEMONIC_FXCH: {
+@@ -202,9 +202,9 @@
+         case ZYDIS_MNEMONIC_FLDLN2: emit("x87_push(ctx, 0.693147180559945309417);"); return true;
+         case ZYDIS_MNEMONIC_FLDLG2: emit("x87_push(ctx, 0.301029995663981195214);"); return true;
+         case ZYDIS_MNEMONIC_FLDCW: emit("ctx.fcw = X86_MEM16(ea);"); return true;
+-        case ZYDIS_MNEMONIC_FNSTCW: emit("X86_MEM16(ea) = ctx.fcw;"); return true;
++        case ZYDIS_MNEMONIC_FNSTCW: emit("X86_MEM16(ea) = ctx.fcw; X86_AUDIT_WRITE(ea,2,FloatingPoint);"); return true;
+         case ZYDIS_MNEMONIC_FNSTSW:
+-            if (mi >= 0) emit("X86_MEM16(ea) = x87_status(ctx);");
++            if (mi >= 0) emit("X86_MEM16(ea) = x87_status(ctx); X86_AUDIT_WRITE(ea,2,FloatingPoint);");
+             else emit("ctx.eax = (ctx.eax & 0xFFFF0000u) | x87_status(ctx);");
+             return true;
+         case ZYDIS_MNEMONIC_FNINIT: emit("ctx.fcw = 0x37F; ctx.fsw = 0; ctx.top = 0;"); return true;  // 0x37F is the power on control word
+@@ -223,7 +223,7 @@
+         }
+         case ZYDIS_MNEMONIC_FNSTENV:
+         case ZYDIS_MNEMONIC_FNSAVE:
+-            emit("X86_MEM32(ea) = ctx.fcw; X86_MEM32(ea + 4) = x87_status(ctx); X86_MEM32(ea + 8) = 0xFFFF;");
++            emit("X86_MEM32(ea) = ctx.fcw; X86_MEM32(ea + 4) = x87_status(ctx); X86_MEM32(ea + 8) = 0xFFFF; X86_AUDIT_WRITE(ea,12,FloatingPoint);");
+             return true;
+         case ZYDIS_MNEMONIC_FLDENV:
+         case ZYDIS_MNEMONIC_FRSTOR:
+@@ -287,20 +287,20 @@
+         case ZYDIS_MNEMONIC_MOVDQA:
+         case ZYDIS_MNEMONIC_MOVDQU:
+             if (d >= 0) emit(F("ctx.xmm[%d] = %s;", d, src128().c_str()));
+-            else emit(F("*X86_PTR(X86Xmm, ea) = ctx.xmm[%d];", s));
++            else emit(F("*X86_PTR(X86Xmm, ea) = ctx.xmm[%d]; X86_AUDIT_WRITE(ea,16,FloatingPoint);", s));
+             return true;
+         case ZYDIS_MNEMONIC_MOVSS:
+             if (d >= 0 && s >= 0) emit(F("ctx.xmm[%d].f[0] = ctx.xmm[%d].f[0];", d, s));
+             else if (d >= 0) emit(F("ctx.xmm[%d].u[0] = X86_MEM32(ea); ctx.xmm[%d].u[1] = ctx.xmm[%d].u[2] = ctx.xmm[%d].u[3] = 0;", d, d, d, d));
+-            else emit(F("X86_MEM32(ea) = ctx.xmm[%d].u[0];", s));
++            else emit(F("X86_MEM32(ea) = ctx.xmm[%d].u[0]; X86_AUDIT_WRITE(ea,4,FloatingPoint);", s));
+             return true;
+         case ZYDIS_MNEMONIC_MOVLPS:
+             if (d >= 0) emit(F("ctx.xmm[%d].q[0] = X86_MEM64(ea);", d));
+-            else emit(F("X86_MEM64(ea) = ctx.xmm[%d].q[0];", s));
++            else emit(F("X86_MEM64(ea) = ctx.xmm[%d].q[0]; X86_AUDIT_WRITE(ea,8,FloatingPoint);", s));
+             return true;
+         case ZYDIS_MNEMONIC_MOVHPS:
+             if (d >= 0) emit(F("ctx.xmm[%d].q[1] = X86_MEM64(ea);", d));
+-            else emit(F("X86_MEM64(ea) = ctx.xmm[%d].q[1];", s));
++            else emit(F("X86_MEM64(ea) = ctx.xmm[%d].q[1]; X86_AUDIT_WRITE(ea,8,FloatingPoint);", s));
+             return true;
+         case ZYDIS_MNEMONIC_MOVLHPS: emit(F("ctx.xmm[%d].q[1] = ctx.xmm[%d].q[0];", d, s)); return true;
+         case ZYDIS_MNEMONIC_MOVHLPS: emit(F("ctx.xmm[%d].q[0] = ctx.xmm[%d].q[1];", d, s)); return true;
+@@ -366,7 +366,7 @@
+             emit(RegWrite(ops[0].reg.value, F("(ctx.xmm[%d].u[0] >> 31) | (ctx.xmm[%d].u[1] >> 31) << 1 | (ctx.xmm[%d].u[2] >> 31) << 2 | (ctx.xmm[%d].u[3] >> 31) << 3", s, s, s, s)));
+             return true;
+         case ZYDIS_MNEMONIC_LDMXCSR: emit("ctx.mxcsr = X86_MEM32(ea);"); return true;
+-        case ZYDIS_MNEMONIC_STMXCSR: emit("X86_MEM32(ea) = ctx.mxcsr;"); return true;
++        case ZYDIS_MNEMONIC_STMXCSR: emit("X86_MEM32(ea) = ctx.mxcsr; X86_AUDIT_WRITE(ea,4,FloatingPoint);"); return true;
+         default:
+             return false;
+     }
+@@ -440,10 +440,10 @@
+     switch (m) {
+         case ZYDIS_MNEMONIC_MOVQ:
+             if (d >= 0) emit(F("%s = %s;", D.c_str(), src.c_str()));
+-            else emit(F("X86_MEM64(ea) = ctx.mm[%d];", s));
++            else emit(F("X86_MEM64(ea) = ctx.mm[%d]; X86_AUDIT_WRITE(ea,8,FloatingPoint);", s));
+             return true;
+         case ZYDIS_MNEMONIC_MOVNTQ:
+-            emit(F("X86_MEM64(ea) = ctx.mm[%d];", s));
++            emit(F("X86_MEM64(ea) = ctx.mm[%d]; X86_AUDIT_WRITE(ea,8,FloatingPoint);", s));
+             return true;
+         case ZYDIS_MNEMONIC_MOVD:
+             if (d >= 0) emit(F("%s = (uint32_t)(%s);", D.c_str(), Read(ops[1], "ea").c_str()));
+diff --git a/runtime/kernel/physical_write_audit.h b/runtime/kernel/physical_write_audit.h
+new file mode 100644
+--- /dev/null
++++ b/runtime/kernel/physical_write_audit.h
+@@ -0,0 +1,58 @@
++#pragma once
++#include "memory.h"
++#include <array>
++#include <atomic>
++#include <cstdint>
++#include <limits>
++
++namespace mem {
++// EN: Diagnostic attribution only; not a synchronization or coherency proof.
++// PT-BR: Atribuição diagnóstica; não é prova de sincronização ou coerência.
++enum class PhysicalWriteSource : uint8_t {
++    None=0, Scalar=1, Stack=2, Atomic=3, FloatingPoint=4, String=5,
++    KernelHelper=6, FileIO=7, RTL=8
++};
++class PhysicalWriteAudit {
++    static constexpr uint64_t kMaxSequence=UINT64_MAX >> 8;
++    inline static std::atomic<bool> enabled_{false};
++    inline static std::array<std::atomic<uint64_t>,kMappedPhysical/kPage> pages_{};
++    static void Mark(uint32_t address,uint64_t bytes,uint32_t base,PhysicalWriteSource source) {
++        const uint64_t begin=address>base?address:base;
++        const uint64_t end=uint64_t(address)+bytes;
++        const uint64_t limit=uint64_t(base)+kMappedPhysical;
++        const uint64_t clipped=end<limit?end:limit;
++        if(begin>=clipped)return;
++        for(auto p=(begin-base)/kPage;p<=(clipped-1-base)/kPage;++p) {
++            auto& slot=pages_[p];
++            auto old=slot.load(std::memory_order_relaxed);
++            uint64_t next;
++            do {
++                auto seq=old>>8;
++                if(seq<kMaxSequence)++seq;
++                next=(seq<<8)|uint8_t(source);
++            } while(!slot.compare_exchange_weak(old,next,std::memory_order_relaxed));
++        }
++    }
++public:
++    struct Event { uint64_t sequence; PhysicalWriteSource source; };
++    static void Enable(bool enabled) { enabled_.store(enabled,std::memory_order_relaxed); }
++    static void Record(uint32_t address,uint64_t bytes,PhysicalWriteSource source) {
++        // EN: Reject unrelated virtual addresses on the cheap path.
++        // PT-BR: Rejeite VAs alheios no caminho barato.
++        if(!bytes || !enabled_.load(std::memory_order_relaxed))return;
++        const uint64_t remaining=(uint64_t(1)<<32)-address;
++        if(bytes>remaining)bytes=remaining;
++        Mark(address,bytes,kContiguousBase,source);
++        Mark(address,bytes,kWriteCombineBase,source);
++    }
++    static Event Read(uint32_t address) {
++        for(auto base:{kContiguousBase,kWriteCombineBase}) {
++            if(address>=base && uint64_t(address)-base<kMappedPhysical) {
++                auto v=pages_[(address-base)/kPage].load(std::memory_order_relaxed);
++                return {v>>8,PhysicalWriteSource(v&255u)};
++            }
++        }
++        return {0,PhysicalWriteSource::None};
++    }
++};
++} // namespace mem
+diff --git a/tests/physical_write_audit_test.cpp b/tests/physical_write_audit_test.cpp
+new file mode 100644
+--- /dev/null
++++ b/tests/physical_write_audit_test.cpp
+@@ -0,0 +1,30 @@
++#include "../runtime/kernel/physical_write_audit.h"
++#include <cassert>
++#include <thread>
++#include <cstdio>
++using namespace mem;
++int main() {
++    auto read=[](uint32_t a){return PhysicalWriteAudit::Read(a);};
++    PhysicalWriteAudit::Record(kContiguousBase,1,PhysicalWriteSource::Scalar);
++    assert(read(kContiguousBase).sequence==0);
++    PhysicalWriteAudit::Enable(true);
++    PhysicalWriteAudit::Record(kContiguousBase+kPage-1,2,PhysicalWriteSource::Scalar);
++    assert(read(kWriteCombineBase).sequence==1);
++    assert(read(kWriteCombineBase+kPage).source==PhysicalWriteSource::Scalar);
++    PhysicalWriteAudit::Record(kWriteCombineBase,1,PhysicalWriteSource::FileIO);
++    assert(read(kContiguousBase).sequence==2 && read(kContiguousBase).source==PhysicalWriteSource::FileIO);
++    PhysicalWriteAudit::Record(kContiguousBase-1,2,PhysicalWriteSource::RTL);
++    assert(read(kContiguousBase).sequence==3);
++    PhysicalWriteAudit::Record(kWriteCombineBase+kMappedPhysical-1,UINT64_MAX,PhysicalWriteSource::String);
++    assert(read(kContiguousBase+kMappedPhysical-1).source==PhysicalWriteSource::String);
++    assert(read(kStackBase).sequence==0);
++    auto write=[](uint32_t a){for(int i=0;i<10000;++i) PhysicalWriteAudit::Record(a,4,PhysicalWriteSource::Atomic);};
++    const auto offset=4*kPage;
++    std::thread a(write,kContiguousBase+offset),b(write,kWriteCombineBase+offset);
++    a.join();b.join();
++    assert(read(kContiguousBase+offset).sequence==20000);
++    PhysicalWriteAudit::Enable(false);
++    write(kContiguousBase+offset);
++    assert(read(kContiguousBase+offset).sequence==20000);
++    std::puts("Physical write audit: PASS / auditoria de escritas: OK");
++}
