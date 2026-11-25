@@ -35,6 +35,7 @@
 #ifdef PGR1_NATIVE_VULKAN
 #include "texture_compare_worker.h"
 #include "texture_coherency.h"
+#include "../../include/pgr/memory/journal_stamp.h"
 #include "kernel/memory.h"
 #endif
 #include "vertex_register_expand.h"
@@ -209,6 +210,16 @@ class GLBackend final : public Backend {
     std::unique_ptr<TextureCompareWorker> compare_worker_;
     bool skip_exact_diagnostic_=false;
     bool miss_trace_=false;
+#ifdef XBE_PHYSICAL_WRITE_AUDIT
+    bool journal_audit_=false;
+    static std::optional<uint64_t> ReadJournal(uint32_t address,std::size_t bytes) {
+        auto physical=pgr::memory::Canonicalize(
+            {{mem::kContiguousBase,mem::kWriteCombineBase},mem::kMappedPhysical,mem::kPage},address,bytes);
+        if(!physical)return {};
+        return pgr::memory::JournalStamp(physical->offset,physical->bytes,mem::kPage,mem::kMappedPhysical,
+            [](uint32_t offset){return mem::PhysicalWriteAudit::Read(mem::kContiguousBase+offset).sequence;});
+    }
+#endif
     unsigned miss_trace_events_=0;
 #endif
     std::map<std::pair<uint64_t,uint64_t>,std::shared_ptr<const ShaderPair>> shaders_;
@@ -223,6 +234,9 @@ class GLBackend final : public Backend {
 #ifdef PGR1_NATIVE_VULKAN
         MemoryTracker::Handle tracked_range=0;
         MemoryTracker::Stamp tracked_stamp{};
+#ifdef XBE_PHYSICAL_WRITE_AUDIT
+        std::optional<uint64_t> journal_stamp;
+#endif
 #endif
     };
     std::unordered_map<uint32_t,CachedPixels> textures_;
@@ -275,10 +289,15 @@ public:
         const char* miss_trace=std::getenv("PGR1_VK_TEXTURE_MISS_TRACE");
         miss_trace_=texture_coherency_==TextureCoherency::Audit && miss_trace && std::strcmp(miss_trace,"1")==0;
 #ifdef XBE_PHYSICAL_WRITE_AUDIT
-        mem::PhysicalWriteAudit::Enable(miss_trace_);
-        LOGR("vulkan-capture: SDK physical write journal / diário de escritas físicas = %s",miss_trace_?"on":"off");
+        const char* journal=std::getenv("PGR1_VK_TEXTURE_JOURNAL_AUDIT");
+        journal_audit_=texture_coherency_==TextureCoherency::Audit && journal && std::strcmp(journal,"1")==0;
+        mem::PhysicalWriteAudit::Enable(miss_trace_ || journal_audit_);
+        LOGR("vulkan-capture: SDK physical write journal / diário de escritas físicas = %s",(miss_trace_ || journal_audit_)?"on":"off");
+        if(journal_audit_) LOGR("vulkan-capture: journal prediction audit (exact bytes retained) / auditoria de previsões do diário (bytes exatos preservados)");
 #else
         if(miss_trace_) LOGR("vulkan-capture: miss trace enabled; SDK journal not compiled / rastreio ativo; diário SDK não compilado");
+        if(std::getenv("PGR1_VK_TEXTURE_JOURNAL_AUDIT"))
+            LOGR("vulkan-capture: journal audit unavailable without SDK write audit build / auditoria do diário indisponível sem build instrumentado");
 #endif
         skip_exact_diagnostic_=!Tracking() && diagnostic && std::strcmp(diagnostic,"skip-exact")==0;
         if(Tracking() && diagnostic && std::strcmp(diagnostic,"skip-exact")==0)
@@ -514,6 +533,19 @@ public:
                 frame_.texture_tracker_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now()-begin).count();
             }
+#ifdef XBE_PHYSICAL_WRITE_AUDIT
+            std::optional<uint64_t> journal_before;
+            auto journal_prediction=pgr::memory::JournalPrediction::Unknown;
+            if(journal_audit_) {
+                const auto begin=std::chrono::steady_clock::now();
+                journal_before=ReadJournal(d.data,bytes);
+                if(metadata_same)
+                    journal_prediction=pgr::memory::PredictJournal(cached.journal_stamp,journal_before,
+                        prediction.registered,prediction.advisory_unchanged);
+                frame_.texture_journal_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now()-begin).count();
+            }
+#endif
             const bool tracked_hit=metadata_same && texture_coherency_==TextureCoherency::Tracked && prediction.CanReuse();
             if(tracked_hit) ++frame_.texture_tracker_fast_hits;
             else if(metadata_same && Tracking()) ++frame_.texture_tracker_exact_fallbacks;
@@ -543,6 +575,23 @@ public:
                     changed=std::memcmp(guest,cached.guest.data(),bytes)!=0;
             }
 #ifdef PGR1_NATIVE_VULKAN
+#ifdef XBE_PHYSICAL_WRITE_AUDIT
+            // EN: Shadow prediction only. Exact comparison above is never bypassed.
+            // PT-BR: Apenas previsão em sombra. A comparação exata acima nunca é omitida.
+            if(journal_audit_ && metadata_same) {
+                switch(journal_prediction) {
+                case pgr::memory::JournalPrediction::Clean:
+                    ++frame_.texture_journal_clean;
+                    if(changed)++frame_.texture_journal_false_negatives;
+                    break;
+                case pgr::memory::JournalPrediction::Dirty:
+                    ++frame_.texture_journal_dirty;
+                    if(!changed)++frame_.texture_journal_false_positives;
+                    break;
+                default: ++frame_.texture_journal_unknown; break;
+                }
+            }
+#endif
             if(Tracking() && metadata_same && !tracked_hit) {
                 const auto audit=AuditTexturePrediction(prediction,changed);
                 frame_.texture_tracker_false_positives+=audit.false_positive;
@@ -622,6 +671,18 @@ public:
                 frame_.decode_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-decode_start).count();
             }
 #ifdef PGR1_NATIVE_VULKAN
+#ifdef XBE_PHYSICAL_WRITE_AUDIT
+            if(journal_audit_) {
+                const auto begin=std::chrono::steady_clock::now();
+                // EN: Compare a second sample after exact snapshot processing.
+                // PT-BR: Compare uma segunda amostra após processar o snapshot exato.
+                const auto journal_after=ReadJournal(d.data,bytes);
+                if(journal_before && journal_before!=journal_after)++frame_.texture_journal_unstable;
+                cached.journal_stamp=pgr::memory::StableJournalStamp(journal_before,journal_after);
+                frame_.texture_journal_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now()-begin).count();
+            }
+#endif
             if(tracked_read) {
                 const auto begin=std::chrono::steady_clock::now();
                 // EN: Publish the stamp with the owned snapshot under the same

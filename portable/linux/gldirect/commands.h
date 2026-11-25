@@ -105,6 +105,14 @@ struct Submission {
     // PT-BR: Ocupação usa pico de bytes; custos de escrita/leitura podem estar na captura.
     std::uint64_t texture_tracker_tracked_bytes=0, texture_tracker_ns=0,
         texture_tracker_write_ns=0;
+    // EN: Journal shadow audit, never proven cache hits.
+    // PT-BR: Auditoria em sombra do diário, nunca hits comprovados.
+    std::uint64_t texture_journal_clean=0,
+        texture_journal_dirty=0,
+        texture_journal_unknown=0,
+        texture_journal_false_negatives=0,
+        texture_journal_false_positives=0,
+        texture_journal_unstable=0, texture_journal_ns=0;
     std::uint32_t front=0;
     bool present=true;
     std::uint32_t reference_width=0, reference_height=0;

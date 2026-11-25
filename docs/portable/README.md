@@ -54,6 +54,9 @@ de todos os escritores guest e as metas de 30/60 FPS continuam pendentes.
 [Atribuição de escritores do SDK (04D.19D)](29-sdk-writer-attribution.md):
 patch opt-in, metadados de falhas e instruções de validação; cobertura ainda desconhecida.
 
+[Auditoria em sombra do diário (04D.19E)](30-journal-shadow-audit.md):
+previsões por sequência de página e comparação exata preservada.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.

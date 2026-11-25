@@ -138,6 +138,23 @@ class TextureReportTests(unittest.TestCase):
         self.assertNotIn("Tracker /", output.getvalue())
         self.assertNotIn("texture_tracker_ms", output.getvalue())
 
+    def test_journal_shadow_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "frames.csv"
+            header = HEADER.rstrip("\n") + "," + ",".join((*module.JOURNAL_COUNTS,*module.JOURNAL_TIMES)) + "\n"
+            path.write_text(header + "1,5,4,8192,1,0,1,0,5,16,3,1,0,0,1,0,0.1\n")
+            rows, errors = module.read_frames(path)
+            self.assertFalse(errors)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                module.report(rows)
+            self.assertIn("75.000%", output.getvalue())
+            self.assertIn("NOT skipped", output.getvalue())
+            path.write_text(header + "1,5,4,8192,1,0,1,0,5,16,3,1,0,4,1,0,0.1\n")
+            rows, errors = module.read_frames(path)
+            self.assertFalse(rows)
+            self.assertEqual(len(errors),1)
+
     def test_old_schema_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             file = Path(tmp) / "frames.csv"

@@ -171,6 +171,7 @@ Run options: PGR1_RUN_SECONDS=60 OUTPUT=1280x720 PGR1_FULLSCREEN=0 PGR1_CAPTURE=
              PGR1_VK_TEXTURE_COHERENCY=exact # default / padrão; full byte comparison / comparação completa
              PGR1_VK_TEXTURE_COHERENCY=audit # advisory predictions + exact pixels / previsões + pixels exatos
              PGR1_VK_TEXTURE_MISS_TRACE=1 # optional bounded miss metadata / metadados de falhas
+             PGR1_VK_TEXTURE_JOURNAL_AUDIT=1 # shadow prediction, requires SDK write audit / previsão informativa
              PGR1_VK_SDK_WRITE_AUDIT=ON # requires patched SDK and regenerated code / exige SDK e código gerado atualizados
              PGR1_VK_TEXTURE_COHERENCY=tracked # experimental; pinned SDK uses exact fallback / SDK fixado usa fallback exato
              PGR1_VK_TEXTURE_DIAGNOSTIC=skip-exact # UNSAFE / INSEGURO: benchmark only, stale textures

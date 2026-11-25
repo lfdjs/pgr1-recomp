@@ -231,8 +231,8 @@ int main(int argc, char** argv) {
     const double seconds=std::getenv("PGR1_RUN_SECONDS")?std::atof(std::getenv("PGR1_RUN_SECONDS")):0;
     auto ms=[](auto duration) { return std::chrono::duration<double,std::milli>(duration).count(); };
     std::ofstream timings("frames.csv"),submissions("submissions.csv"),gpu_times("gpu.csv");
-    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,texture_cache_entries_peak,vk_pipeline_bind_skips,vk_viewport_set_skips,vk_blend_set_skips,texture_overlap_checks,texture_diagnostic_skips,texture_tracker_queries,texture_tracker_fast_hits,texture_tracker_invalidations,texture_tracker_exact_fallbacks,texture_tracker_uncovered_ranges,texture_tracker_false_positives,texture_tracker_false_negatives,texture_tracker_monitored_writes,texture_tracker_dirty_pages,texture_tracker_tracked_bytes,texture_tracker_covered_queries,texture_tracker_ms,texture_tracker_write_ms\n";
-    submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,texture_cache_entries_peak,vk_pipeline_bind_skips,vk_viewport_set_skips,vk_blend_set_skips,texture_overlap_checks,texture_diagnostic_skips,texture_tracker_queries,texture_tracker_fast_hits,texture_tracker_invalidations,texture_tracker_exact_fallbacks,texture_tracker_uncovered_ranges,texture_tracker_false_positives,texture_tracker_false_negatives,texture_tracker_monitored_writes,texture_tracker_dirty_pages,texture_tracker_tracked_bytes,texture_tracker_covered_queries,texture_tracker_ms,texture_tracker_write_ms\n";
+    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,texture_cache_entries_peak,vk_pipeline_bind_skips,vk_viewport_set_skips,vk_blend_set_skips,texture_overlap_checks,texture_diagnostic_skips,texture_tracker_queries,texture_tracker_fast_hits,texture_tracker_invalidations,texture_tracker_exact_fallbacks,texture_tracker_uncovered_ranges,texture_tracker_false_positives,texture_tracker_false_negatives,texture_tracker_monitored_writes,texture_tracker_dirty_pages,texture_tracker_tracked_bytes,texture_tracker_covered_queries,texture_tracker_ms,texture_tracker_write_ms,texture_journal_clean,texture_journal_dirty,texture_journal_unknown,texture_journal_false_negatives,texture_journal_false_positives,texture_journal_unstable,texture_journal_ms\n";
+    submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,texture_cache_entries_peak,vk_pipeline_bind_skips,vk_viewport_set_skips,vk_blend_set_skips,texture_overlap_checks,texture_diagnostic_skips,texture_tracker_queries,texture_tracker_fast_hits,texture_tracker_invalidations,texture_tracker_exact_fallbacks,texture_tracker_uncovered_ranges,texture_tracker_false_positives,texture_tracker_false_negatives,texture_tracker_monitored_writes,texture_tracker_dirty_pages,texture_tracker_tracked_bytes,texture_tracker_covered_queries,texture_tracker_ms,texture_tracker_write_ms,texture_journal_clean,texture_journal_dirty,texture_journal_unknown,texture_journal_false_negatives,texture_journal_false_positives,texture_journal_unstable,texture_journal_ms\n";
     gpu_times<<"frame,gpu_ms\n";
     std::ofstream batch_log("vk_batches.csv");
     // EN: One guest frame may generate many submissions (offscreen/fences).
@@ -336,7 +336,9 @@ int main(int argc, char** argv) {
                     <<next.texture_tracker_false_negatives<<','<<next.texture_tracker_monitored_writes<<','
                     <<next.texture_tracker_dirty_pages<<','<<next.texture_tracker_tracked_bytes<<','
                     <<next.texture_tracker_covered_queries<<','
-                    <<next.texture_tracker_ns/1e6<<','<<next.texture_tracker_write_ns/1e6<<'\n';
+                    <<next.texture_tracker_ns/1e6<<','<<next.texture_tracker_write_ns/1e6<<','
+                    <<next.texture_journal_clean<<','<<next.texture_journal_dirty<<','<<next.texture_journal_unknown<<','<<next.texture_journal_false_negatives<<','<<next.texture_journal_false_positives<<','<<next.texture_journal_unstable<<','
+                    <<next.texture_journal_ns/1e6<<'\n';
             pending.draw_ns+=next.draw_ns; pending.decode_ns+=next.decode_ns;
             pending.texture_check_ns+=next.texture_check_ns; pending.assemble_ns+=next.assemble_ns;
             pending.texture_static_binds+=next.texture_static_binds;
@@ -364,6 +366,13 @@ int main(int argc, char** argv) {
             pending.texture_tracker_covered_queries+=next.texture_tracker_covered_queries;
             pending.texture_tracker_ns+=next.texture_tracker_ns;
             pending.texture_tracker_write_ns+=next.texture_tracker_write_ns;
+            pending.texture_journal_clean+=next.texture_journal_clean;
+            pending.texture_journal_dirty+=next.texture_journal_dirty;
+            pending.texture_journal_unknown+=next.texture_journal_unknown;
+            pending.texture_journal_false_negatives+=next.texture_journal_false_negatives;
+            pending.texture_journal_false_positives+=next.texture_journal_false_positives;
+            pending.texture_journal_unstable+=next.texture_journal_unstable;
+            pending.texture_journal_ns+=next.texture_journal_ns;
             // EN/PT-BR: Residency gauge / Ocupação usa o pico.
             pending.texture_tracker_tracked_bytes=std::max(
                 pending.texture_tracker_tracked_bytes,next.texture_tracker_tracked_bytes);
@@ -409,7 +418,9 @@ int main(int argc, char** argv) {
                     <<pending.texture_tracker_false_negatives<<','<<pending.texture_tracker_monitored_writes<<','
                     <<pending.texture_tracker_dirty_pages<<','<<pending.texture_tracker_tracked_bytes<<','
                     <<pending.texture_tracker_covered_queries<<','
-                    <<pending.texture_tracker_ns/1e6<<','<<pending.texture_tracker_write_ns/1e6<<'\n';
+                    <<pending.texture_tracker_ns/1e6<<','<<pending.texture_tracker_write_ns/1e6<<','
+                    <<pending.texture_journal_clean<<','<<pending.texture_journal_dirty<<','<<pending.texture_journal_unknown<<','<<pending.texture_journal_false_negatives<<','<<pending.texture_journal_false_positives<<','<<pending.texture_journal_unstable<<','
+                    <<pending.texture_journal_ns/1e6<<'\n';
                 if (stats.presented) ++total_frames;
                 last_frame=at; last_cpu=cpu; pending={};
                 execute_ms=shader_ms=fence_ms=acquire_ms=present_ms=gpu_ms=0;

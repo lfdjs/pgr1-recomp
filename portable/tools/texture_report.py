@@ -34,6 +34,13 @@ TRACKER_COUNTS = (
     "texture_tracker_tracked_bytes", "texture_tracker_covered_queries",
 )
 TRACKER_TIMES = ("texture_tracker_ms", "texture_tracker_write_ms")
+JOURNAL_COUNTS = ("texture_journal_clean",
+                  "texture_journal_dirty",
+                  "texture_journal_unknown",
+                  "texture_journal_false_negatives",
+                  "texture_journal_false_positives",
+                  "texture_journal_unstable",)
+JOURNAL_TIMES = ("texture_journal_ms",)
 
 
 def read_frames(path: Path, after: int = 0, before: int | None = None):
@@ -61,9 +68,9 @@ def read_frames(path: Path, after: int = 0, before: int | None = None):
                     raise ValueError("non-finite metric")
                 if counts["texture_same_draw_reuses"] > counts["texture_static_binds"]:
                     raise ValueError("reuse exceeds static binds")
-                optional = {key: int(row[key]) for key in (*MIP_COUNTS, *CACHE_COUNTS, *TRACKER_COUNTS,
+                optional = {key: int(row[key]) for key in (*MIP_COUNTS, *CACHE_COUNTS, *TRACKER_COUNTS, *JOURNAL_COUNTS,
                             "texture_overlap_checks", "texture_diagnostic_skips") if key in fields}
-                optional_times = {key: float(row[key]) for key in TRACKER_TIMES if key in fields}
+                optional_times = {key: float(row[key]) for key in (*TRACKER_TIMES, *JOURNAL_TIMES) if key in fields}
                 if any(not math.isfinite(value) for value in optional_times.values()):
                     raise ValueError("non-finite tracker time")
                 if any(value < 0 for value in optional_times.values()):
@@ -71,6 +78,11 @@ def read_frames(path: Path, after: int = 0, before: int | None = None):
                 for key in ("texture_tracker_covered_queries", "texture_tracker_fast_hits"):
                     if key in optional and "texture_tracker_queries" in optional and optional[key] > optional["texture_tracker_queries"]:
                         raise ValueError(f"{key} exceeds tracker queries")
+                if all(key in optional for key in JOURNAL_COUNTS):
+                    if optional["texture_journal_false_negatives"] > optional["texture_journal_clean"] or optional["texture_journal_false_positives"] > optional["texture_journal_dirty"]:
+                        raise ValueError("journal errors exceed classified predictions")
+                    if sum(optional["texture_journal_"+key] for key in ("clean","dirty","unknown")) > counts["texture_memcmp_checks"]:
+                        raise ValueError("journal predictions exceed exact comparisons")
                 if any(value < 0 for value in optional.values()):
                     raise ValueError("negative optional counter")
             except (TypeError, ValueError) as exc:
@@ -163,7 +175,16 @@ def report(rows, name="Selected frames"):
               f"total {sum(combined):.3f} ms")
         print("  EN/PT-BR: Tracker times may nest in capture/check times; do not add them again / "
               "Tempos do tracker podem estar na captura/verificação; não os some novamente.")
-    for key in (*TIMES, *(key for key in TRACKER_TIMES if key in rows[0])):
+    if all(key in rows[0] for key in JOURNAL_COUNTS):
+        journal = {key: sum(row["texture_journal_"+key] for row in rows)
+                   for key in ("clean","dirty","unknown","false_negatives","false_positives","unstable")}
+        queries = journal["clean"]+journal["dirty"]+journal["unknown"]
+        if queries or journal["unstable"]:
+            print(f"  Journal shadow audit / Auditoria em sombra: clean/limpas={journal['clean']:,}; dirty/sujas={journal['dirty']:,}; unknown/desconhecidas={journal['unknown']:,}")
+            print(f"  Candidate clean / Candidatas limpas: {100*journal['clean']/max(queries,1):.3f}% of classified checks; NOT skipped / NÃO omitidas")
+            print(f"  Journal errors / Erros do diário: false negatives/falsos negativos={journal['false_negatives']:,}; false positives/falsos positivos={journal['false_positives']:,}; unstable/instáveis={journal['unstable']:,}")
+            print("  EN/PT-BR: Advisory only; exact comparisons retained / Apenas informativo; comparações exatas preservadas.")
+    for key in (*TIMES, *(key for key in (*TRACKER_TIMES, *JOURNAL_TIMES) if key in rows[0])):
         nums = [row[key] for row in rows]
         print(f"  {key}: mean {statistics.mean(nums):.3f} ms; P95 {percentile(nums, 0.95):.3f} ms; "
               f"P99 {percentile(nums, 0.99):.3f} ms")
