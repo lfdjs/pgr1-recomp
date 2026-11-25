@@ -151,6 +151,7 @@ class GLBackend final : public Backend {
     // EN: Opt-in until measured on the reference Sandy Bridge system.
     // PT-BR: Opcional até a medição no Sandy Bridge de referência.
     std::unique_ptr<TextureCompareWorker> compare_worker_;
+    bool skip_exact_diagnostic_=false;
 #endif
     std::map<std::pair<uint64_t,uint64_t>,std::shared_ptr<const ShaderPair>> shaders_;
     VertexProgramCache vertex_program_cache_;
@@ -204,7 +205,13 @@ public:
         g_raw_vertices=false;
 #ifdef PGR1_NATIVE_VULKAN
         const char* overlap=std::getenv("PGR1_VK_TEXTURE_OVERLAP");
-        if(overlap && std::strcmp(overlap,"1")==0)
+        // EN: Deliberately incorrect ceiling experiment, never a coherency mode.
+        // PT-BR: Experimento de teto deliberadamente incorreto, nunca um modo de coerência.
+        const char* diagnostic=std::getenv("PGR1_VK_TEXTURE_DIAGNOSTIC");
+        skip_exact_diagnostic_=diagnostic && std::strcmp(diagnostic,"skip-exact")==0;
+        if(skip_exact_diagnostic_)
+            LOGR("WARNING / AVISO: UNSAFE texture diagnostic skip-exact; stale textures possible; NOT correctness validation");
+        if(!skip_exact_diagnostic_ && overlap && std::strcmp(overlap,"1")==0)
             compare_worker_=std::make_unique<TextureCompareWorker>();
         LOGR("%s: exact texture/vertex overlap / sobreposição exata textura/vértices = %s",
             kBackendName,compare_worker_?"on":"off");
@@ -401,6 +408,13 @@ public:
                 (d.cube?std::size_t(std::uint32_t(face_stride*6u)):TotalSize(d));
             bool changed=!metadata_same;
             std::int64_t overlapped_assembly_ns=0;
+#ifdef PGR1_NATIVE_VULKAN
+            if(metadata_same && skip_exact_diagnostic_) {
+                // EN: Measure the ceiling only; may retain stale pixels.
+                // PT-BR: Mede apenas o teto; pode manter pixels desatualizados.
+                ++frame_.texture_diagnostic_skips;
+            } else
+#endif
             if(metadata_same) {
                 ++frame_.texture_memcmp_checks;
                 frame_.texture_memcmp_bytes+=bytes; // EN: upper bound (early exit); PT-BR: limite superior (saída antecipada)

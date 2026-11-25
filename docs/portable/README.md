@@ -40,6 +40,9 @@ worker limitado, sem ignorar escritas; rastreamento de memória permanece penden
 [Redução de trabalho repetido na captura (04D.18C)](22-captura-sem-repeticao.md):
 cache exato de programas, buffers temporários e layout de texturas.
 
+[Diagnóstico de teto e auditoria de coerência (04D.19A)](23-coerencia-guest.md):
+modo inseguro opt-in, revisão fixada do SDK e prova de aliases físicos.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.

@@ -92,6 +92,8 @@ struct Submission {
         texture_cache_entries_peak=0;
     // EN/PT-BR: Exact comparisons overlapped with assembly / comparações exatas sobrepostas.
     std::uint64_t texture_overlap_checks=0;
+    // EN/PT-BR: Unsafe benchmark only / Apenas benchmark inseguro.
+    std::uint64_t texture_diagnostic_skips=0;
     std::uint32_t front=0;
     bool present=true;
     std::uint32_t reference_width=0, reference_height=0;

@@ -13,6 +13,7 @@
 #include <cstring>
 #include <vector>
 #include <thread>
+#include <cstdlib>
 namespace { std::vector<uint8_t> memory(1<<20); }
 namespace kernel { uint8_t* g_base=memory.data(); }
 namespace mem {
@@ -23,6 +24,9 @@ namespace app { const GameInfo kGame{}; float FrameAspect() { return 4.0f/3; } S
 namespace logx { void Write(Level,const char*,...) {} }
 using namespace pgr::gldirect;
 int main() {
+#ifdef PGR1_NATIVE_VULKAN
+    unsetenv("PGR1_VK_TEXTURE_DIAGNOSTIC"); // exact regression must run in exact mode
+#endif
     auto header=[](uint32_t h,uint32_t data,uint32_t fmt) {
         kernel::W32(h,0x50000); kernel::W32(h+4,data);
         kernel::W32(h+12,fmt<<8); kernel::W32(h+16,31|(31<<12)|(1u<<24));
@@ -257,6 +261,21 @@ int main() {
     f.completion->set_value(); empty_report.join();
     assert(kernel::R32(report+8)==0 && kernel::R32(report+12)==0);
     s.simple[gpu::kMCountEnable/4]=0;
+    // EN: Demonstrate why this diagnostic must never become the default.
+    // PT-BR: Demonstra por que o diagnóstico nunca pode ser o padrão.
+    setenv("PGR1_VK_TEXTURE_DIAGNOSTIC","skip-exact",1);
+    auto diagnostic=gpu::CreateBackend(); assert(diagnostic->Init(32,32));
+    unsetenv("PGR1_VK_TEXTURE_DIAGNOSTIC");
+    header(0x1300,0x40000,0x12); kernel::W32(0x1300,0x40000);
+    s.textures[0]=0x1300;
+    kernel::W32(0x40000,0xff123456);
+    diagnostic->Draw(s,5,0,3,nullptr);
+    kernel::W32(0x40000,0xfffedcba);
+    diagnostic->Draw(s,5,0,3,nullptr);
+    diagnostic->Present(s.rt); assert(Take(f));
+    assert(f.commands.size()==2 && f.texture_cache_misses==1);
+    assert(f.texture_diagnostic_skips==1 && f.texture_memcmp_checks==0);
+    assert(f.commands[1].textures[0].pixels->levels[0][0]==0xff123456);
 #endif
     std::puts("SDK capture tests passed: FVF colors, quad topology, 16-bit indices, owned guest data, texture decode, unsupported shaders.");
     Stop();
