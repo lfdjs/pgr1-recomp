@@ -43,6 +43,14 @@ cache exato de programas, buffers temporários e layout de texturas.
 [Diagnóstico de teto e auditoria de coerência (04D.19A)](23-coerencia-guest.md):
 modo inseguro opt-in, revisão fixada do SDK e prova de aliases físicos.
 
+[Auditoria dos escritores (04D.19B)](24-writer-coverage.md),
+[núcleo de coerência e captura auditada (04D.19B/C)](25-event-driven-texture-cache.md),
+[conversão direta de índices (04D.20)](26-geometry-capture-v2.md),
+[comandos de validação](27-performance-validation.md) e
+[handoff da sessão](28-handoff.md): núcleo cooperativo testado, audit integrado
+e tracked experimental com fallback exato integral no SDK fixado. A cobertura
+de todos os escritores guest e as metas de 30/60 FPS continuam pendentes.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.
@@ -70,6 +78,14 @@ without a vendor-specific environment variable.
 provide CPU capability detection and controlled compiler experiments.
 The engine-audio routing regression is resolved; the native Vulkan CPU texture cache now defaults to 1,024 entries after an A/B test exposed eviction thrashing. Full 30/60 FPS stability,
 fast MSAA and RTX 3060 Ti validation remain open.
+
+[Writer coverage audit](24-writer-coverage.md),
+[portable memory tracker and audited capture](25-event-driven-texture-cache.md),
+[direct flat index conversion](26-geometry-capture-v2.md),
+[validation workflow](27-performance-validation.md) and
+[session handoff](28-handoff.md) document 04D.19B/C and 04D.20.
+The cooperative core is tested; guest coverage remains Unknown and experimental
+tracked capture keeps complete exact fallback on the pinned SDK.
 
 ---
 
