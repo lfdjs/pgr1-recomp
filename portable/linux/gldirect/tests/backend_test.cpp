@@ -460,6 +460,38 @@ int main() {
 #if defined(__linux__) && UINTPTR_MAX > UINT32_MAX
     TestAliasedTextureCoherency();
 #endif
+#else
+    // EN/PT-BR: GL opt-in ordered report / report GL ordenado opt-in.
+    s.vs_handle=0x44;s.vs.reset();s.textures[0]=0;
+    auto gl_visibility=gpu::CreateBackend();
+    {
+        setenv("PGR1_GL_REAL_VISIBILITY","1",1);
+        assert(gl_visibility->Init(32,32));
+        unsetenv("PGR1_GL_REAL_VISIBILITY");
+    }
+    constexpr uint32_t gl_report=0x8000;
+    s.simple[gpu::kMCountEnable/4]=1;
+    gl_visibility->ClearReport();
+    gl_visibility->Draw(s,5,0,3,nullptr);
+    kernel::W32(gl_report+12,UINT32_MAX);
+    std::thread gl_wait([&]{gl_visibility->GetReport(gl_report);});
+    while(!Take(f))std::this_thread::yield();
+    assert(f.reason==SubmissionReason::VisibilityReport && !f.present && f.completion);
+    assert(f.commands.size()==1 && f.commands[0].visibility);
+    assert(kernel::R32(gl_report+12)==UINT32_MAX);
+    f.commands[0].visibility->set_value(123);f.completion->set_value();gl_wait.join();
+    assert(kernel::R32(gl_report+8)==123 && kernel::R32(gl_report+12)==0);
+    std::thread gl_again([&]{gl_visibility->GetReport(gl_report);});
+    while(!Take(f))std::this_thread::yield();
+    assert(f.commands.empty() && f.completion);
+    f.completion->set_value();gl_again.join();
+    assert(kernel::R32(gl_report+8)==123);
+    gl_visibility->ClearReport();
+    std::thread gl_empty([&]{gl_visibility->GetReport(gl_report);});
+    while(!Take(f))std::this_thread::yield();
+    assert(f.commands.empty() && f.completion);
+    f.completion->set_value();gl_empty.join();
+    assert(kernel::R32(gl_report+8)==0);
 #endif
     std::puts("SDK capture tests passed: FVF colors, quad topology, 16-bit indices, owned guest data, texture decode, unsupported shaders.");
     Stop();

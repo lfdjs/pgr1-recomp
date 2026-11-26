@@ -5,6 +5,7 @@
 #include <SDL3/SDL_main.h>
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <ctime>

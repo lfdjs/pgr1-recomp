@@ -22,7 +22,7 @@ region() {
 }
 build() {
     [[ -f sdk/runtime/gpu/vertex.cpp ]] || git submodule update --init sdk
-    for tool in cmake clang clang++ glslangValidator spirv-cross; do
+    for tool in cmake "${CC:-clang}" "${CXX:-clang++}" glslangValidator spirv-cross; do
         command -v "$tool" >/dev/null || { echo "Missing dependency: $tool" >&2; return 2; }
     done
     local release; release="$(region)"
@@ -45,7 +45,7 @@ build() {
         -DPGR1_VK_CPU_PROFILE="$CPU_PROFILE" -DPGR1_VK_GUEST_OPT="$GUEST_OPT" -DPGR1_VK_CPU_SIGNATURE="$signature" "${compiler[@]}"
     cmake --build "$BUILD" --parallel "${JOBS:-4}" --target "${1:-game}"
     if [[ "${1:-game}" = game ]]; then
-        printf '%s\n' "$signature" > "$BUILD/game-cpu.signature"
+        printf '%s\n' "$CPU_PROFILE:$GUEST_OPT:$signature" > "$BUILD/game-cpu.signature"
         printf '%s\n' "$digest" > "$BUILD/game-xbe.sha1"
     fi
 }
@@ -54,7 +54,7 @@ run() {
     signature="$(cpu_info --signature)" || return 2
     digest="$(sha1sum assets/default.xbe | cut -d' ' -f1)"
     if [[ ! -x "$BUILD/game" || ! -f "$BUILD/game-cpu.signature" || ! -f "$BUILD/game-xbe.sha1" ]] ||
-        [[ "$(cat "$BUILD/game-cpu.signature")" != "$signature" || "$(cat "$BUILD/game-xbe.sha1")" != "$digest" ]]; then
+        [[ "$(cat "$BUILD/game-cpu.signature")" != "$CPU_PROFILE:$GUEST_OPT:$signature" || "$(cat "$BUILD/game-xbe.sha1")" != "$digest" ]]; then
         build
     else
         cmake --build "$BUILD" --parallel "${JOBS:-4}" --target game

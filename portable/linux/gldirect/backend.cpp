@@ -1027,7 +1027,7 @@ public:
         const auto completed=Completion();
 #else
         frame_.completion=std::make_shared<std::promise<void>>();
-        const auto completed=frame_.completion->get_future();
+        const auto completed=frame_.completion->get_future().share();
 #endif
         FlushFor(SubmissionReason::VisibilityReport);
         uint64_t count=resolved_visibility_count_;
