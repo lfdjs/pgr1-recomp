@@ -44,7 +44,7 @@ for path in files:
 keys = ('SCRIPT','OUTPUT','FPS','PGR1_RUN_SECONDS','PGR1_VK_DEVICE','PGR1_VK_MSAA',
         'PGR1_VK_FXAA','PGR1_VK_INTERNAL_PERCENT','PGR1_VK_TEXTURE_COHERENCY',
         'PGR1_VK_TEXTURE_JOURNAL_AUDIT','PGR1_VK_SYNC_PROFILE','PGR1_VK_SCENE_VBLANKS',
-        'PGR1_VK_PIPELINED','PGR1_VK_SHADER_WORKERS','PGR1_VK_DESCRIPTOR_REUSE','PGR1_VK_REPORT_DIRECT_WAIT')
+        'PGR1_VK_PIPELINED','PGR1_VK_SHADER_WORKERS','PGR1_VK_DESCRIPTOR_REUSE','PGR1_VK_REPORT_DIRECT_WAIT','PGR1_VK_CACHE_DIR','XBE_DISC_RATE')
 metadata = dict(revision=git('rev-parse','HEAD'), sdk_revision=git('-C','sdk','rev-parse','HEAD'),
     dirty=git('status','--short'), binary=binary, binary_sha256=sha(binary),
     seed=seed, seed_hdd_sha256=hdd.hexdigest(), script_sha256=sha(os.environ['SCRIPT']),

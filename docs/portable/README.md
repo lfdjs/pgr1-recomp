@@ -73,6 +73,9 @@ redução de prefixos alheios, consultas cumulativas e cópia linear.
 [Visibilidade e descritores dinâmicos (04D.22B)](39-visibility-descriptor-reuse.md):
 reduz trabalho anterior aos reports e permite espera direta de fences em A/B.
 
+[Cache persistente e análise de Londres (04D.22C)](40-persistent-shader-pipeline-cache.md):
+SPIR-V compartilhado, pipelines por dispositivo e diagnóstico de engasgos.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.

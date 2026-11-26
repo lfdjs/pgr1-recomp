@@ -74,6 +74,11 @@ run_game() {
   RUN="$(realpath "$RUN")"
   (
     flock -n 9 || { echo "A game already owns $RUN" >&2; exit 2; }
+    # EN/PT-BR: Resolve relative shared cache before entering run dir / resolva antes de entrar no run.
+    if [[ -n "${PGR1_VK_CACHE_DIR:-}" ]]; then
+      mkdir -p "$PGR1_VK_CACHE_DIR"
+      export PGR1_VK_CACHE_DIR="$(realpath "$PGR1_VK_CACHE_DIR")"
+    fi
     cd "$RUN"
     echo 'Backend: native Vulkan (SDK NV2A -> HLSL -> SPIR-V, real recompiled PGR1)'
     echo "Run directory: $RUN"
@@ -168,6 +173,7 @@ Run options: PGR1_RUN_SECONDS=60 OUTPUT=1280x720 PGR1_FULLSCREEN=0 PGR1_CAPTURE=
              PGR1_VK_SYNC_PROFILE=1 # optional sync.csv + sync-submissions.csv / métricas de sincronização
              PGR1_VK_SCENE_VBLANKS=1200,1800,3000 # separate visual run / execução visual separada
              PGR1_VK_PIPELINED=0 # diagnostic: restore per-submission GPU fence wait
+             PGR1_VK_CACHE_DIR=/absolute/cache # opt-in persistent SPIR-V + device pipeline cache / cache persistente
              PGR1_VK_DESCRIPTOR_REUSE=1 # experimental: dynamic UBO and descriptor reuse / reuso
              PGR1_VK_REPORT_DIRECT_WAIT=1 # experimental: wait real report fence directly / espera direta
              PGR1_VK_SHADER_WORKERS=1 # diagnostic: single shader worker

@@ -132,6 +132,9 @@ static std::string CompileHlslSpirvUncached(const std::string& source,bool verte
     std::string binary;
     const bool hit=Read(hlsl)==input && valid(binary=Read(spv));
     if(!hit) {
+        // EN: Do not leave an older binary paired with new source on failure.
+        // PT-BR: Não deixe binário anterior associado ao novo fonte em caso de falha.
+        std::filesystem::remove(spv);
         { std::ofstream out(hlsl); out<<input; if(!out) throw std::runtime_error("Cannot write "+hlsl.string()); }
         std::vector<std::string> args={PGR1_GLSLANG_EXECUTABLE,"-D","-V","--target-env","vulkan1.0",
             "-S",vertex?"vert":"frag","-e","main","--hlsl-iomap","--auto-map-locations",
@@ -155,7 +158,11 @@ static ShaderStageCache& SpirvStages() {
 std::string CompileHlslSpirv(const std::string& source,bool vertex) {
     // EN: Different working directories own independent disk-cache namespaces.
     // PT-BR: Diretorios de trabalho diferentes possuem caches em disco distintos.
-    const auto directory=std::filesystem::current_path()/"shadercache-vk-v1";
+    // EN: Explicit shared cache survives separate benchmark run directories.
+    // PT-BR: Cache compartilhado explícito sobrevive a diretórios de benchmark distintos.
+    const char* root=std::getenv("PGR1_VK_CACHE_DIR");
+    const auto directory=(root && *root?std::filesystem::absolute(root):
+        std::filesystem::current_path())/"shadercache-vk-v1";
     return SpirvStages().Get(source,vertex,directory.string(),[&] {
         return CompileHlslSpirvUncached(source,vertex,directory);
     });

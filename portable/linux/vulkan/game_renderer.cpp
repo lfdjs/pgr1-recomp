@@ -26,6 +26,10 @@
 #include <stdexcept>
 #include <utility>
 #include <unordered_map>
+#include <filesystem>
+#include <unistd.h>
+#include <cerrno>
+#include "pipeline_cache_file.h"
 
 namespace pgr::vulkan {
 using namespace gldirect;
@@ -144,6 +148,8 @@ struct Renderer::Impl {
     VkDescriptorSetLayout descriptors=VK_NULL_HANDLE;
     VkPipelineLayout layout=VK_NULL_HANDLE;
     VkPipelineCache pipeline_cache=VK_NULL_HANDLE;
+    std::filesystem::path pipeline_cache_path;
+    bool pipeline_cache_dirty=false;
     VkDescriptorPool descriptor_pool=VK_NULL_HANDLE;
     uint32_t descriptor_capacity=0; // 04D.2: reset instead of recreating each submission
     std::unordered_map<std::string,VkDescriptorSet> descriptor_sets;
@@ -229,7 +235,7 @@ struct Renderer::Impl {
             for(auto& [k,s]:samplers) vkDestroySampler(device,s,nullptr);
             if(queries) vkDestroyQueryPool(device,queries,nullptr);
             if(descriptor_pool) vkDestroyDescriptorPool(device,descriptor_pool,nullptr);
-            if(pipeline_cache) vkDestroyPipelineCache(device,pipeline_cache,nullptr);
+            if(pipeline_cache) { SavePipelineCache(); vkDestroyPipelineCache(device,pipeline_cache,nullptr); }
             if(layout) vkDestroyPipelineLayout(device,layout,nullptr);
             if(descriptors) vkDestroyDescriptorSetLayout(device,descriptors,nullptr);
             for(auto s:finished) vkDestroySemaphore(device,s,nullptr);
@@ -241,6 +247,73 @@ struct Renderer::Impl {
         }
         if(surface) SDL_Vulkan_DestroySurface(instance,surface,nullptr);
         if(instance) vkDestroyInstance(instance,nullptr);
+    }
+    void InitPipelineCache() {
+        // EN: Cache contents are driver-specific; the header and filename
+        //     both identify the physical device/driver cache ABI.
+        // PT-BR: O conteúdo é específico do driver; cabeçalho e nome
+        //        identificam a ABI do cache do dispositivo.
+        std::vector<unsigned char> data;
+        const char* root=std::getenv("PGR1_VK_CACHE_DIR");
+        if(root && *root) {
+            try {
+                auto dir=std::filesystem::absolute(root)/"pipelinecache-v1";
+                std::filesystem::create_directories(dir);
+                std::string name;
+                constexpr char hex[]="0123456789abcdef";
+                for(auto b:properties.pipelineCacheUUID) { name+=hex[b>>4]; name+=hex[b&15]; }
+                pipeline_cache_path=dir/(std::to_string(properties.vendorID)+"-"+std::to_string(properties.deviceID)+"-"+name+
+                    (descriptor_reuse?"-dynamic.bin":"-static.bin"));
+                data=performance::ReadPipelineCacheFile(pipeline_cache_path,properties.vendorID,properties.deviceID,properties.pipelineCacheUUID);
+            } catch(const std::exception& e) {
+                std::fprintf(stderr,"Vulkan pipeline cache unavailable / indisponível: %s\n",e.what());
+                pipeline_cache_path.clear();
+            }
+        }
+        VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+        ci.initialDataSize=data.size();ci.pInitialData=data.empty()?nullptr:data.data();
+        VkResult result=vkCreatePipelineCache(device,&ci,nullptr,&pipeline_cache);
+        if(result!=VK_SUCCESS && !data.empty()) {
+            std::fprintf(stderr,"Vulkan pipeline cache rejected / rejeitado; starting empty / iniciando vazio\n");
+            data.clear(); ci.initialDataSize=0; ci.pInitialData=nullptr;
+            result=vkCreatePipelineCache(device,&ci,nullptr,&pipeline_cache);
+        }
+        Check(result,"pipeline cache");
+        if(!pipeline_cache_path.empty())std::printf("Vulkan pipeline cache loaded / carregado: %zu bytes (%s)\n",data.size(),pipeline_cache_path.c_str());
+    }
+    void SavePipelineCache() noexcept {
+        if(pipeline_cache_path.empty() || !pipeline_cache_dirty)return;
+        try {
+            size_t bytes=0;
+            if(vkGetPipelineCacheData(device,pipeline_cache,&bytes,nullptr)!=VK_SUCCESS ||
+                bytes<32 || bytes>performance::kMaxPipelineCacheBytes)return;
+            std::vector<unsigned char> data(bytes);
+            if(vkGetPipelineCacheData(device,pipeline_cache,&bytes,data.data())!=VK_SUCCESS)return;
+            data.resize(bytes);
+            if(!performance::ValidPipelineCache(data,properties.vendorID,properties.deviceID,properties.pipelineCacheUUID))return;
+            // EN: Unique temporary file and atomic rename; no partially written
+            //     cache becomes visible to another process. Last successful save wins.
+            // PT-BR: Temporário único e rename atômico; nenhum leitor vê arquivo parcial.
+            //        A última gravação bem-sucedida prevalece.
+            auto temp=pipeline_cache_path.string()+".tmp.XXXXXX";
+            int fd=mkstemp(temp.data());
+            if(fd<0)return;
+            bool ok=true;size_t written=0;
+            while(written<data.size()) {
+                auto n=::write(fd,data.data()+written,data.size()-written);
+                if(n<0 && errno==EINTR)continue;
+                if(n<=0) {ok=false;break;}
+                written+=size_t(n);
+            }
+            if(::close(fd)!=0)ok=false;
+            std::error_code ec;
+            if(ok)std::filesystem::rename(temp,pipeline_cache_path,ec);
+            if(!ok || ec) {std::filesystem::remove(temp,ec);return;}
+            pipeline_cache_dirty=false;
+            std::printf("Vulkan pipeline cache saved / salvo: %zu bytes\n",bytes);
+        } catch(const std::exception& e) {
+            std::fprintf(stderr,"Vulkan pipeline cache save failed / falha ao salvar: %s\n",e.what());
+        }
     }
     void Init() {
         std::printf("PGR1 Vulkan GPU completion / Conclusao da GPU: %s (PGR1_VK_PIPELINED)\n",
@@ -355,7 +428,7 @@ struct Renderer::Impl {
         Check(vkCreateDescriptorSetLayout(device,&ds,nullptr,&descriptors),"descriptor layout");
         VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pl.setLayoutCount=1; pl.pSetLayouts=&descriptors;
         Check(vkCreatePipelineLayout(device,&pl,nullptr,&layout),"pipeline layout");
-        VkPipelineCacheCreateInfo cache{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO}; Check(vkCreatePipelineCache(device,&cache,nullptr,&pipeline_cache),"pipeline cache");
+        InitPipelineCache();
         if(timestamp_bits) { VkQueryPoolCreateInfo query{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; query.queryType=VK_QUERY_TYPE_TIMESTAMP; query.queryCount=2;
             Check(vkCreateQueryPool(device,&query,nullptr,&queries),"timestamp queries"); }
     }
@@ -598,7 +671,8 @@ struct Renderer::Impl {
     std::array<VkShaderModule,2>& Modules(const std::shared_ptr<const ShaderPair>& pair) {
         auto it=modules.find(pair); if(it!=modules.end())return it->second;
         if(!pair || !pair->spirv.valid())throw std::runtime_error("draw has no SDK Vulkan shader pair");
-        auto start=Clock::now(); const auto& code=pair->spirv.get(); stats.shader_ms+=Millis(start);
+        auto start=Clock::now(); const auto& code=pair->spirv.get(); const double spirv_wait=Millis(start); stats.shader_ms+=spirv_wait;
+        if(spirv_wait>=10)std::fprintf(stderr,"Vulkan shader future wait / espera SPIR-V: %.3f ms\n",spirv_wait);
         std::array<VkShaderModule,2> output{};
         try { for(unsigned i=0;i<2;i++) {
             if(code[i].size()<20 || code[i].size()%4)throw std::runtime_error("invalid SDK SPIR-V binary");
@@ -648,7 +722,9 @@ struct Renderer::Impl {
         VkDynamicState states[]={VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR,VK_DYNAMIC_STATE_BLEND_CONSTANTS};
         VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO}; dynamic.dynamicStateCount=3; dynamic.pDynamicStates=states;
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO}; info.stageCount=2; info.pStages=stages; info.pVertexInputState=&vertex; info.pInputAssemblyState=&assembly; info.pViewportState=&viewport; info.pRasterizationState=&raster; info.pMultisampleState=&ms; info.pDepthStencilState=&ds; info.pColorBlendState=&bc; info.pDynamicState=&dynamic; info.layout=layout; info.renderPass=pass;
-        VkPipeline result=VK_NULL_HANDLE; auto start=Clock::now(); Check(vkCreateGraphicsPipelines(device,pipeline_cache,1,&info,nullptr,&result),"SDK graphics pipeline"); stats.shader_ms+=Millis(start); ++stats.pipeline_creates; pipelines[key]=result; return result;
+        VkPipeline result=VK_NULL_HANDLE; auto start=Clock::now(); Check(vkCreateGraphicsPipelines(device,pipeline_cache,1,&info,nullptr,&result),"SDK graphics pipeline"); const double pipeline_ms=Millis(start); stats.shader_ms+=pipeline_ms; ++stats.pipeline_creates; pipeline_cache_dirty=true;
+        if(pipeline_ms>=10)std::fprintf(stderr,"Vulkan pipeline creation / criação de pipeline: %.3f ms\n",pipeline_ms);
+        pipelines[key]=result; return result;
     }
     VkSampler Sampler(const Texture& t,unsigned levels) {
         const unsigned forced_aniso=quality::aniso.load(std::memory_order_relaxed);
