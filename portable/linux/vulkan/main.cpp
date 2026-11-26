@@ -3,6 +3,9 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
+#include <algorithm>
+#include <sstream>
+#include <stdexcept>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -231,15 +234,95 @@ int main(int argc, char** argv) {
     const double seconds=std::getenv("PGR1_RUN_SECONDS")?std::atof(std::getenv("PGR1_RUN_SECONDS")):0;
     auto ms=[](auto duration) { return std::chrono::duration<double,std::milli>(duration).count(); };
     std::ofstream timings("frames.csv"),submissions("submissions.csv"),gpu_times("gpu.csv");
-    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,texture_cache_entries_peak,vk_pipeline_bind_skips,vk_viewport_set_skips,vk_blend_set_skips,texture_overlap_checks,texture_diagnostic_skips,texture_tracker_queries,texture_tracker_fast_hits,texture_tracker_invalidations,texture_tracker_exact_fallbacks,texture_tracker_uncovered_ranges,texture_tracker_false_positives,texture_tracker_false_negatives,texture_tracker_monitored_writes,texture_tracker_dirty_pages,texture_tracker_tracked_bytes,texture_tracker_covered_queries,texture_tracker_ms,texture_tracker_write_ms,texture_journal_clean,texture_journal_dirty,texture_journal_unknown,texture_journal_false_negatives,texture_journal_false_positives,texture_journal_unstable,texture_journal_ms\n";
-    submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,texture_cache_entries_peak,vk_pipeline_bind_skips,vk_viewport_set_skips,vk_blend_set_skips,texture_overlap_checks,texture_diagnostic_skips,texture_tracker_queries,texture_tracker_fast_hits,texture_tracker_invalidations,texture_tracker_exact_fallbacks,texture_tracker_uncovered_ranges,texture_tracker_false_positives,texture_tracker_false_negatives,texture_tracker_monitored_writes,texture_tracker_dirty_pages,texture_tracker_tracked_bytes,texture_tracker_covered_queries,texture_tracker_ms,texture_tracker_write_ms,texture_journal_clean,texture_journal_dirty,texture_journal_unknown,texture_journal_false_negatives,texture_journal_false_positives,texture_journal_unstable,texture_journal_ms\n";
+    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,supported_draws,rejected_draws,vk_accepted,vk_rejected,indexed,nonindexed,presented,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,texture_cache_entries_peak,vk_pipeline_bind_skips,vk_viewport_set_skips,vk_blend_set_skips,texture_overlap_checks,texture_diagnostic_skips,texture_tracker_queries,texture_tracker_fast_hits,texture_tracker_invalidations,texture_tracker_exact_fallbacks,texture_tracker_uncovered_ranges,texture_tracker_false_positives,texture_tracker_false_negatives,texture_tracker_monitored_writes,texture_tracker_dirty_pages,texture_tracker_tracked_bytes,texture_tracker_covered_queries,texture_tracker_ms,texture_tracker_write_ms,texture_journal_clean,texture_journal_dirty,texture_journal_unknown,texture_journal_false_negatives,texture_journal_false_positives,texture_journal_unstable,texture_journal_ms,guest_vblank,submission_reason,geometry_vertices,geometry_indices,geometry_bytes,simulation_tick\n";
+    submissions<<"frame,present_requested,presented,capture_ms,queue_wait_ms,execute_ms,shader_ms,fence_ms,acquire_ms,present_ms,gpu_completed_ms,gpu_sample_frame,vk_accepted,vk_rejected,indexed,nonindexed,acquire_timeout,render_failed,cube_cache_creates,cube_cache_hits,cube_face_copies,staging_allocations,staging_reuses,descriptor_creates,descriptor_resets,framebuffer_hits,framebuffer_creates,presented_fps,presented_frame_ms,msaa_samples,fxaa,render_percent,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,texture_cache_entries_peak,vk_pipeline_bind_skips,vk_viewport_set_skips,vk_blend_set_skips,texture_overlap_checks,texture_diagnostic_skips,texture_tracker_queries,texture_tracker_fast_hits,texture_tracker_invalidations,texture_tracker_exact_fallbacks,texture_tracker_uncovered_ranges,texture_tracker_false_positives,texture_tracker_false_negatives,texture_tracker_monitored_writes,texture_tracker_dirty_pages,texture_tracker_tracked_bytes,texture_tracker_covered_queries,texture_tracker_ms,texture_tracker_write_ms,texture_journal_clean,texture_journal_dirty,texture_journal_unknown,texture_journal_false_negatives,texture_journal_false_positives,texture_journal_unstable,texture_journal_ms,guest_vblank,submission_reason,geometry_vertices,geometry_indices,geometry_bytes,simulation_tick\n";
     gpu_times<<"frame,gpu_ms\n";
+    // EN: Diagnostic readback can complete a pending game timestamp after its
+    // render row was logged. Preserve new game samples, excluding frame 0
+    // diagnostic submissions; never write the already-delivered samples twice.
+    // PT-BR: Readback diagnóstico pode concluir timestamps após o registro do
+    // render. Preserve só novas amostras do jogo, excluindo o frame diagnóstico 0.
+    auto record_diagnostic_samples=[&](auto&& operation) {
+        const auto before=renderer->LastStats().gpu_samples.size();
+        operation();
+        const auto& samples=renderer->LastStats().gpu_samples;
+        for(std::size_t i=before;i<samples.size();++i) if(samples[i].frame)
+            gpu_times<<samples[i].frame<<','<<samples[i].milliseconds<<'\n';
+    };
     std::ofstream batch_log("vk_batches.csv");
     // EN: One guest frame may generate many submissions (offscreen/fences).
     // PT-BR: Um frame do Xbox pode gerar diversas submissões (offscreen/fences).
     // Analyze all rows; never discard duplicate frame IDs.
     // Analise todas as linhas; não descarte IDs de frame repetidos.
     batch_log<<"frame,accepted,render_passes,batched_groups,batched_draws,passes_saved\n";
+    // EN: Optional counters follow every submission and sum until a real
+    // presentation. GPU samples retain their source frame in gpu.csv.
+    // PT-BR: Contadores opcionais somam todas as submissões até a apresentação.
+    // Amostras GPU conservam seu frame de origem em gpu.csv.
+    const char* sync_env=std::getenv("PGR1_VK_SYNC_PROFILE");
+    const bool sync_profile=sync_env && std::string(sync_env)=="1";
+    std::ofstream sync_log, sync_submissions;
+    auto sync_header=[&](std::ostream& out) {
+        out<<"frame,guest_vblank,presented,reason,"<<pgr::gldirect::SyncProfile::Columns()
+           <<",visibility_queries,visibility_query_pool_creates,visibility_query_pool_reuses,visibility_deferred_submissions,readback_requests,readback_bytes,readback_buffer_creates,readback_buffer_reuses,readback_resolve_ms,submissions,nonpresent_submissions,render_passes,pipeline_creates,shader_ms\n";
+    };
+    auto sync_row=[&](std::ostream& out,const pgr::gldirect::Submission& frame,
+                      const pgr::gldirect::SyncProfile& producer,const pgr::vulkan::Renderer::Stats& stats) {
+        out<<frame.frame<<','<<frame.guest_vblank<<','<<stats.presented<<','
+           <<pgr::gldirect::ReasonName(frame.reason)<<',';
+        producer.Csv(out);
+        out<<','<<stats.visibility_queries<<','<<stats.visibility_query_pool_creates<<','
+           <<stats.visibility_query_pool_reuses<<','<<stats.visibility_deferred_submissions<<','
+           <<stats.readback_requests<<','<<stats.readback_bytes<<','<<stats.readback_buffer_creates<<','
+           <<stats.readback_buffer_reuses<<','<<stats.readback_resolve_ms<<','<<stats.submissions<<','
+           <<stats.nonpresent_submissions<<','<<stats.render_passes<<','<<stats.pipeline_creates<<','<<stats.shader_ms<<'\n';
+    };
+    pgr::vulkan::Renderer::Stats sync_totals{};
+    pgr::gldirect::SyncProfile sync_producer{};
+    auto add_sync=[&](const pgr::vulkan::Renderer::Stats& stats) {
+        sync_totals.visibility_queries+=stats.visibility_queries;
+        sync_totals.visibility_query_pool_creates+=stats.visibility_query_pool_creates;
+        sync_totals.visibility_query_pool_reuses+=stats.visibility_query_pool_reuses;
+        sync_totals.visibility_deferred_submissions+=stats.visibility_deferred_submissions;
+        sync_totals.readback_requests+=stats.readback_requests; sync_totals.readback_bytes+=stats.readback_bytes;
+        sync_totals.readback_buffer_creates+=stats.readback_buffer_creates;
+        sync_totals.readback_buffer_reuses+=stats.readback_buffer_reuses;
+        sync_totals.readback_resolve_ms+=stats.readback_resolve_ms;
+        sync_totals.submissions+=stats.submissions; sync_totals.nonpresent_submissions+=stats.nonpresent_submissions;
+        sync_totals.render_passes+=stats.render_passes; sync_totals.pipeline_creates+=stats.pipeline_creates;
+        sync_totals.shader_ms+=stats.shader_ms;
+    };
+    if(sync_profile) {
+        sync_log.open("sync.csv"); sync_submissions.open("sync-submissions.csv");
+        sync_header(sync_log); sync_header(sync_submissions);
+    }
+    // EN: Scene capture follows guest vblanks instead of host wall time or
+    // presentation number. Capturing drains the GPU; use a separate scene run.
+    // PT-BR: Captura por vblank guest, independente do tempo host e do número
+    // da apresentação. Capturar drena a GPU; use uma execução visual separada.
+    std::vector<std::uint64_t> scene_vblanks;
+    if(const char* schedule=std::getenv("PGR1_VK_SCENE_VBLANKS")) {
+        std::istringstream input(schedule); std::string token;
+        while(std::getline(input,token,',')) {
+            std::size_t used=0;
+            try {
+                auto value=std::stoull(token,&used);
+                if(used!=token.size() || token.empty() || token.front()=='-') throw std::invalid_argument("vblank");
+                scene_vblanks.push_back(value);
+            } catch(const std::exception&) {
+                std::fprintf(stderr,"Invalid scene vblank / Vblank de cena inválido: %s\n",token.c_str());
+                pgr::gldirect::Stop(); return 2;
+            }
+        }
+        std::sort(scene_vblanks.begin(),scene_vblanks.end());
+        scene_vblanks.erase(std::unique(scene_vblanks.begin(),scene_vblanks.end()),scene_vblanks.end());
+    }
+    std::size_t scene_index=0;
+    std::ofstream scene_log;
+    if(!scene_vblanks.empty()) {
+        scene_log.open("scene-markers.csv");
+        scene_log<<"requested_vblank,guest_vblank,simulation_tick,frame,path,captured\n";
+    }
     pgr::gldirect::Submission pending{};
     double execute_ms=0,shader_ms=0,fence_ms=0,acquire_ms=0,present_ms=0,gpu_ms=0;
     std::uint64_t accepted=0,rejected=0,indexed=0,nonindexed=0,total_frames=0,total_accepted=0,total_rejected=0,last_guest_frame=0;
@@ -304,6 +387,17 @@ int main(int argc, char** argv) {
                 pgr::gldirect::Fail(ex.what());
             }
             const auto stats=renderer->LastStats();
+            if(sync_profile) {
+                sync_row(sync_submissions,next,next.sync,stats);
+                sync_producer.Add(next.sync); add_sync(stats);
+                // Failed presentation attempts remain in the next successful interval.
+                // Tentativas sem apresentação entram no próximo intervalo concluído.
+                if(stats.presented) {
+                    sync_totals.presented=true;
+                    sync_row(sync_log,next,sync_producer,sync_totals);
+                    sync_producer={}; sync_totals={};
+                }
+            }
             batch_log<<next.frame<<','<<stats.accepted<<','<<stats.render_passes<<','
                      <<stats.batched_groups<<','<<stats.batched_draws<<','
                      <<(stats.batched_draws-stats.batched_groups)<<'\n';
@@ -338,7 +432,9 @@ int main(int argc, char** argv) {
                     <<next.texture_tracker_covered_queries<<','
                     <<next.texture_tracker_ns/1e6<<','<<next.texture_tracker_write_ns/1e6<<','
                     <<next.texture_journal_clean<<','<<next.texture_journal_dirty<<','<<next.texture_journal_unknown<<','<<next.texture_journal_false_negatives<<','<<next.texture_journal_false_positives<<','<<next.texture_journal_unstable<<','
-                    <<next.texture_journal_ns/1e6<<'\n';
+                    <<next.texture_journal_ns/1e6<<','<<next.guest_vblank<<','<<pgr::gldirect::ReasonName(next.reason)<<','<<next.geometry_vertices<<','<<next.geometry_indices<<','<<next.geometry_bytes<<','<<next.simulation_tick<<'\n';
+            pending.geometry_vertices+=next.geometry_vertices;
+            pending.geometry_indices+=next.geometry_indices; pending.geometry_bytes+=next.geometry_bytes;
             pending.draw_ns+=next.draw_ns; pending.decode_ns+=next.decode_ns;
             pending.texture_check_ns+=next.texture_check_ns; pending.assemble_ns+=next.assemble_ns;
             pending.texture_static_binds+=next.texture_static_binds;
@@ -420,7 +516,7 @@ int main(int argc, char** argv) {
                     <<pending.texture_tracker_covered_queries<<','
                     <<pending.texture_tracker_ns/1e6<<','<<pending.texture_tracker_write_ns/1e6<<','
                     <<pending.texture_journal_clean<<','<<pending.texture_journal_dirty<<','<<pending.texture_journal_unknown<<','<<pending.texture_journal_false_negatives<<','<<pending.texture_journal_false_positives<<','<<pending.texture_journal_unstable<<','
-                    <<pending.texture_journal_ns/1e6<<'\n';
+                    <<pending.texture_journal_ns/1e6<<','<<next.guest_vblank<<','<<pgr::gldirect::ReasonName(next.reason)<<','<<pending.geometry_vertices<<','<<pending.geometry_indices<<','<<pending.geometry_bytes<<','<<next.simulation_tick<<'\n';
                 if (stats.presented) ++total_frames;
                 last_frame=at; last_cpu=cpu; pending={};
                 execute_ms=shader_ms=fence_ms=acquire_ms=present_ms=gpu_ms=0;
@@ -431,9 +527,18 @@ int main(int argc, char** argv) {
                 pipeline_skips=viewport_skips=blend_skips=0;
             }
             if (!render_ok) { boot_failed=true; break; }
-            if (!next.reference_pixels.empty()) renderer->Compare(next);
+            if(next.present && stats.presented && scene_index<scene_vblanks.size() &&
+               next.guest_vblank>=scene_vblanks[scene_index]) {
+                const auto requested=scene_vblanks[scene_index++];
+                const auto path="scene-vblank-"+std::to_string(requested)+".ppm";
+                bool captured=false;
+                record_diagnostic_samples([&] { captured=renderer->Capture(path.c_str()); });
+                scene_log<<requested<<','<<next.guest_vblank<<','<<next.simulation_tick<<','<<next.frame<<','<<path<<','<<captured<<'\n';
+                scene_log.flush();
+            }
+            if (!next.reference_pixels.empty()) record_diagnostic_samples([&] { renderer->Compare(next); });
             if (capture_frame && next.present && next.frame==capture_frame) {
-                captured_frame=renderer->Capture(capture_frame_path);
+                record_diagnostic_samples([&] { captured_frame=renderer->Capture(capture_frame_path); });
                 std::printf("Vulkan exact guest frame %llu capture %s: %s\n",
                     static_cast<unsigned long long>(capture_frame),capture_frame_path,captured_frame?"saved":"failed");
             }
@@ -444,9 +549,18 @@ int main(int argc, char** argv) {
             // PT-BR: O jogo pode aguardar uma fence sem gerar novos comandos;
             // a sondagem conclui o token sem travar a thread a cada submissao.
             try {
+                const auto previous_fence=renderer->LastStats().fence_ms;
+                const auto previous_resolve=renderer->LastStats().readback_resolve_ms;
                 if(renderer->PollCompletion()) {
-                    for(const auto& sample:renderer->LastStats().gpu_samples)
+                    const auto& completed=renderer->LastStats();
+                    // EN: Poll retains prior counters; add only new wait costs.
+                    // PT-BR: Poll conserva contadores; some só custos novos.
+                    fence_ms+=completed.fence_ms-previous_fence;
+                    if(sync_profile)sync_totals.readback_resolve_ms+=completed.readback_resolve_ms-previous_resolve;
+                    for(const auto& sample:completed.gpu_samples) {
                         gpu_times<<sample.frame<<','<<sample.milliseconds<<'\n';
+                        gpu_ms+=sample.milliseconds;
+                    }
                 }
             } catch(const std::exception& ex) {
                 std::fprintf(stderr,"Vulkan GPU completion poll failed: %s\n",ex.what());
@@ -461,13 +575,15 @@ int main(int argc, char** argv) {
             // vk_batches.csv, before periodic snapshots and final shutdown.
             // PT-BR: _Exit ignora destruidores de streams; grave tambem
             // vk_batches.csv em disco antes de relatorios e do encerramento.
-            timings.flush(); submissions.flush(); gpu_times.flush(); batch_log.flush(); logx::Flush();
+            timings.flush(); submissions.flush(); gpu_times.flush(); batch_log.flush(); sync_log.flush(); sync_submissions.flush(); logx::Flush();
             if (fs::is_regular_file("snap")) {
-                if (!renderer->Capture("snap.ppm")) std::fputs("vulkan: requested snapshot failed\n",stderr);
+                record_diagnostic_samples([&] {
+                    if (!renderer->Capture("snap.ppm")) std::fputs("vulkan: requested snapshot failed\n",stderr);
+                });
                 std::error_code error; fs::remove("snap",error);
             }
             if(fs::is_regular_file("variants")) {
-                CaptureVariants(*renderer);
+                record_diagnostic_samples([&] { CaptureVariants(*renderer); });
                 std::error_code error; fs::remove("variants",error);
             }
             char title[240];
@@ -488,10 +604,12 @@ int main(int argc, char** argv) {
     } catch (const std::exception& ex) {
         std::fprintf(stderr,"Native Vulkan final synchronization failed: %s\n",ex.what()); boot_failed=true;
     }
-    if (const char* capture=std::getenv("PGR1_CAPTURE"); capture && !renderer->Capture(capture))
-        std::fputs("vulkan: final capture failed\n",stderr);
+    if (const char* capture=std::getenv("PGR1_CAPTURE"))
+        record_diagnostic_samples([&] {
+            if(!renderer->Capture(capture)) std::fputs("vulkan: final capture failed\n",stderr);
+        });
     if(const char* variants=std::getenv("PGR1_CAPTURE_VARIANTS");variants && *variants=='1')
-        CaptureVariants(*renderer);
+        record_diagnostic_samples([&] { CaptureVariants(*renderer); });
     const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
     std::printf("PGR1 NATIVE Vulkan game: guest_frame=%llu presented=%llu accepted=%llu rejected=%llu elapsed_s=%.3f\n",
         static_cast<unsigned long long>(last_guest_frame),static_cast<unsigned long long>(total_frames),
@@ -500,7 +618,7 @@ int main(int argc, char** argv) {
             // vk_batches.csv, before periodic snapshots and final shutdown.
             // PT-BR: _Exit ignora destruidores de streams; grave tambem
             // vk_batches.csv em disco antes de relatorios e do encerramento.
-            timings.flush(); submissions.flush(); gpu_times.flush(); batch_log.flush(); logx::Flush();
+            timings.flush(); submissions.flush(); gpu_times.flush(); batch_log.flush(); sync_log.flush(); sync_submissions.flush(); logx::Flush();
     pgr::gldirect::StopAudio();
     if (had_input) SendCommand("");
     if (pad) SDL_CloseGamepad(pad);

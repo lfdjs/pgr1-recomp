@@ -165,6 +165,8 @@ run-game executes the game; acceptance still requires reviewing its draw counter
 Run options: PGR1_RUN_SECONDS=60 OUTPUT=1280x720 PGR1_FULLSCREEN=0 PGR1_CAPTURE=frame.ppm
              SCRIPT=/absolute/input-script.txt PGR1_SCRIPT_ONLY=1 PGR1_VK_RUN_DIR=/path/to/run
              PGR1_CAPTURE_FRAME=300 PGR1_CAPTURE_FRAME_PATH=capture-frame.ppm
+             PGR1_VK_SYNC_PROFILE=1 # optional sync.csv + sync-submissions.csv / métricas de sincronização
+             PGR1_VK_SCENE_VBLANKS=1200,1800,3000 # separate visual run / execução visual separada
              PGR1_VK_PIPELINED=0 # diagnostic: restore per-submission GPU fence wait
              PGR1_VK_SHADER_WORKERS=1 # diagnostic: single shader worker
              PGR1_VK_TEXTURE_OVERLAP=1 # experimental / experimental: exact compare + vertex assembly

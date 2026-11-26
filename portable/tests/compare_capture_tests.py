@@ -92,6 +92,16 @@ class CompareCaptureTests(unittest.TestCase):
             module.print_summary("legacy", summary)
         self.assertIn("P50=16.000", output.getvalue())
 
+    def test_owned_geometry_counts_preserve_failed_present_selection(self):
+        path = self.write("geometry.csv", ["frame", "presented", "presented_frame_ms",
+                                           "geometry_vertices", "geometry_indices", "geometry_bytes"],
+                          [[1, 1, 0, 9, 9, 9], [2, 0, 0, 99, 99, 99],
+                           [3, 1, 20, 3, 0, 912], [4, 1, 10, 4, 4, 1232]])
+        summary = module.summarize(module.read_frames(path))
+        self.assertEqual(summary["counts"]["geometry_vertices"]["total"], 7)
+        self.assertEqual(summary["counts"]["geometry_indices"]["total"], 4)
+        self.assertEqual(summary["counts"]["geometry_bytes"]["total"], 2144)
+
     def test_one_percent_low_is_inverse_mean_of_slowest(self):
         rows = [{"frame": i + 1, "frame_ms": 10} for i in range(198)]
         rows.extend([{"frame": 199, "frame_ms": 50}, {"frame": 200, "frame_ms": 150}])
@@ -109,7 +119,8 @@ class CompareCaptureTests(unittest.TestCase):
             module.summarize(module.read_frames(self.modern()), after=100)
 
     def test_schema_and_numeric_validation(self):
-        cases = [(["frame", "capture_ms"], [[1, 1]]),
+        cases = [(["frame", "frame_ms", "geometry_indices"], [[1, 1, -1]]),
+                 (["frame", "capture_ms"], [[1, 1]]),
                  (["frame", "frame_ms", "frame_ms"], [[1, 1, 2]]),
                  (["frame", "frame_ms"], [[1]]),
                  (["frame", "frame_ms"], [[1, 2, 3]]),

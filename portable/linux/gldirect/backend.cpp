@@ -36,6 +36,7 @@
 #include "texture_compare_worker.h"
 #include "texture_coherency.h"
 #include "../../include/pgr/memory/journal_stamp.h"
+#include "../../include/pgr/runtime/simulation_clock.h"
 #include "kernel/memory.h"
 #endif
 #include "vertex_register_expand.h"
@@ -65,6 +66,19 @@ void DumpRejected(const char* kind,std::span<const uint32_t> words) {
 Rect Rectangle(const uint32_t* r) { return {int(r[0]),int(r[1]),int(r[2])-int(r[0]),int(r[3])-int(r[1])}; }
 class GLBackend final : public Backend {
     Submission frame_;
+    bool sync_profile_=false;
+    struct WaitTimer {
+        bool enabled;
+        double& milliseconds;
+        std::chrono::steady_clock::time_point begin;
+        WaitTimer(bool on,double& ms):enabled(on),milliseconds(ms) {
+            if(enabled) begin=std::chrono::steady_clock::now();
+        }
+        ~WaitTimer() {
+            if(enabled) milliseconds+=std::chrono::duration<double,std::milli>(
+                std::chrono::steady_clock::now()-begin).count();
+        }
+    };
 #ifdef PGR1_NATIVE_VULKAN
     std::shared_future<void> current_completion_;
     std::map<uint32_t,std::shared_future<void>> fences_;
@@ -112,8 +126,17 @@ class GLBackend final : public Backend {
         catch(const std::exception& e) { Fail(std::string("GPU completion cancelled: ")+e.what()); }
     }
 #endif
-    void SubmitFrame() {
+    void FlushFor(SubmissionReason reason) {
+        if(sync_profile_) ++frame_.sync.flush_calls;
+        if(!frame_.commands.empty() || frame_.completion) {
+            frame_.present=false; frame_.frame=frames_+1; SubmitFrame(reason);
+        }
+    }
+    void SubmitFrame(SubmissionReason reason=SubmissionReason::Present) {
+        frame_.reason=reason;
+        frame_.guest_vblank=harness::g_vblanks.load(std::memory_order_relaxed);
 #ifdef PGR1_NATIVE_VULKAN
+        frame_.simulation_tick=pgr::runtime::simulation_ticks.load(std::memory_order_relaxed);
         CollectTrackerStats();
         Completion();
 #endif
@@ -279,6 +302,8 @@ public:
         // Assemble's converted path still uses the SDK's exact Xbox attribute decoders.
         // No global flag is toggled around individual draws.
         g_raw_vertices=false;
+        const char* sync_profile=std::getenv("PGR1_VK_SYNC_PROFILE");
+        sync_profile_=sync_profile && std::strcmp(sync_profile,"1")==0;
 #ifdef PGR1_NATIVE_VULKAN
         const char* overlap=std::getenv("PGR1_VK_TEXTURE_OVERLAP");
         // EN: Deliberately incorrect ceiling experiment, never a coherency mode.
@@ -329,6 +354,9 @@ public:
         c.flags=flags; c.color=color; c.z=z; c.stencil=stencil;
         if(n && rects) for(uint32_t i=0;i<n;i++) { uint32_t r[4]; std::memcpy(r,rects+i*16,16); c.rects.push_back(Rectangle(r)); }
         if(c.rects.empty()) c.rects.push_back({int(s.viewport.x),int(s.viewport.y),int(s.viewport.w),int(s.viewport.h)});
+        frame_.geometry_vertices+=c.vertices.size();
+        frame_.geometry_indices+=c.indices.size();
+        frame_.geometry_bytes+=c.vertices.size()*sizeof(Vertex)+c.indices.size()*sizeof(uint32_t);
         MarkGpuWritten(c.target.color);
         if(c.target.depth)MarkGpuWritten(c.target.depth);
         frame_.commands.push_back(std::move(c));
@@ -783,6 +811,9 @@ public:
             visibility=c.visibility->get_future().share();
         }
 #endif
+        frame_.geometry_vertices+=c.vertices.size();
+        frame_.geometry_indices+=c.indices.size();
+        frame_.geometry_bytes+=c.vertices.size()*sizeof(Vertex)+c.indices.size()*sizeof(uint32_t);
         MarkGpuWritten(c.target.color);
         if(c.target.depth)MarkGpuWritten(c.target.depth);
         frame_.commands.push_back(std::move(c));
@@ -847,6 +878,7 @@ public:
 #endif
     }
     void Sync(uint32_t data,uint32_t size) override {
+        if(sync_profile_) ++frame_.sync.sync_calls;
         for(const auto& [address,surface]:targets_) {
             const auto& [desc,target]=surface;
             if(!gpu_written_.contains(address) || !unread_.contains(address)) continue;
@@ -856,15 +888,17 @@ public:
             if(gpu_epoch_[address]!=DirtyEpoch(address)) { gpu_written_.erase(address); unread_.erase(address); continue; }
             Command c; c.kind=Command::Kind::Readback; c.target=target; c.read_depth=Format(desc.format).depth;
             c.readback=std::make_shared<std::promise<std::vector<uint32_t>>>(); auto future=c.readback->get_future();
-            frame_.commands.push_back(std::move(c)); frame_.present=false; frame_.frame=frames_+1; SubmitFrame();
+            frame_.commands.push_back(std::move(c)); frame_.present=false; frame_.frame=frames_+1; SubmitFrame(SubmissionReason::Readback);
             std::vector<uint32_t> pixels;
-            try { pixels=future.get(); } catch(const std::exception& e) { Fail(std::string("GPU readback cancelled: ")+e.what()); return; }
+            if(sync_profile_) ++frame_.sync.readback_waits;
+            try { WaitTimer timer(sync_profile_,frame_.sync.readback_wait_ms); pixels=future.get(); } catch(const std::exception& e) { Fail(std::string("GPU readback cancelled: ")+e.what()); return; }
             try { WritePixels(address,desc,pixels); }
             catch(const std::exception& e) { Fail(e.what()); return; }
             unread_.erase(address);
         }
     }
     void SyncLate(uint32_t data) override {
+        if(sync_profile_) ++frame_.sync.sync_late_calls;
         auto surface=targets_.find(data);
         if(surface==targets_.end() || !gpu_written_.contains(data)) return;
         if(auto old=late_.find(data);old!=late_.end()) {
@@ -879,7 +913,7 @@ public:
         late_.emplace(data,LateRead{surface->second.first,c.readback->get_future()});
         frame_.commands.push_back(std::move(c));
     }
-    void Flush() override { if(!frame_.commands.empty() || frame_.completion) { frame_.present=false; frame_.frame=frames_+1; SubmitFrame(); } }
+    void Flush() override { FlushFor(SubmissionReason::Flush); }
     void SetGamma(const uint8_t*) override { Unsupported("gamma ramp"); }
 #ifdef PGR1_NATIVE_VULKAN
     uint32_t Fence() override {
@@ -890,7 +924,7 @@ public:
         }
         do { ++next_fence_; } while(!next_fence_ || fences_.contains(next_fence_));
         fences_[next_fence_]=Completion();
-        Flush();
+        FlushFor(SubmissionReason::Fence);
         return next_fence_;
     }
     bool FencePending(uint32_t fence) override {
@@ -898,34 +932,42 @@ public:
         return found!=fences_.end() && Pending(found->second);
     }
     void WaitFence(uint32_t fence) override {
+        if(sync_profile_) ++frame_.sync.fence_wait_calls;
+        WaitTimer timer(sync_profile_,frame_.sync.fence_wait_ms);
         const auto found=fences_.find(fence);
         if(found!=fences_.end()) { WaitCompletion(found->second); fences_.erase(found); }
     }
     bool Busy(uint32_t resource) override {
+        if(sync_profile_) ++frame_.sync.gpu_busy_poll_count;
         const auto found=resource_use_.find(resource);
         if(found==resource_use_.end()) return false;
         // A guest polling IsBusy must let the recorded prefix reach the device.
-        Flush();
+        FlushFor(SubmissionReason::ResourceBusy);
         if(Pending(found->second.completion)) return true;
         resource_use_.erase(found); return false;
     }
     void WaitResource(uint32_t resource) override {
+        if(sync_profile_) ++frame_.sync.resource_wait_calls;
         const auto found=resource_use_.find(resource);
         if(found==resource_use_.end()) return;
-        Flush(); WaitCompletion(found->second.completion); resource_use_.erase(found);
+        FlushFor(SubmissionReason::ResourceWait);
+        WaitTimer timer(sync_profile_,frame_.sync.resource_wait_ms);
+        WaitCompletion(found->second.completion); resource_use_.erase(found);
     }
-    void ClearReport() override { counted_.clear(); }
+    void ClearReport() override { if(sync_profile_) ++frame_.sync.visibility_clears; counted_.clear(); }
 #endif
     void GetReport(uint32_t r) override {
 #ifdef PGR1_NATIVE_VULKAN
         // A report is an ordered GPU operation, even with no counted draws.
         // Preserve the SDK's 16-byte time/count/status layout. Unsupported or
         // cancelled work leaves its pending status intact, never a fake result.
+        if(sync_profile_) ++frame_.sync.visibility_reports;
         const auto completed=Completion();
-        Flush();
+        FlushFor(SubmissionReason::VisibilityReport);
         uint64_t count=0;
         constexpr uint64_t limit=UINT32_MAX;
         try {
+            WaitTimer timer(sync_profile_,frame_.sync.visibility_report_wait_ms);
             completed.get();
             for(const auto& query:counted_) count=std::min(limit,count+std::min(limit,query.get()));
         } catch(const std::exception& e) {

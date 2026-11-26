@@ -159,6 +159,7 @@ void TestAliasedTextureCoherency() {
 #endif
 int main() {
 #ifdef PGR1_NATIVE_VULKAN
+    ScopedEnvironment sync_profile("PGR1_VK_SYNC_PROFILE","1");
     const char* coherency=std::getenv("PGR1_VK_TEXTURE_COHERENCY");
     if(!coherency || (std::strcmp(coherency,"audit")!=0 && std::strcmp(coherency,"tracked")!=0))
         unsetenv("PGR1_VK_TEXTURE_DIAGNOSTIC");
@@ -349,6 +350,7 @@ int main() {
     assert(backend->Busy(s.streams[0].vb));
     assert(!backend->Busy(0xdeadbeef));
     assert(Take(f) && !f.present && f.commands.size()==1 && f.completion);
+    assert(f.reason==SubmissionReason::Fence && f.sync.flush_calls>0);
     f.completion->set_value();
     assert(!backend->FencePending(fence));
     assert(!backend->Busy(s.streams[0].vb));
@@ -376,6 +378,7 @@ int main() {
     std::thread report_wait([&] { backend->GetReport(report); });
     while(!Take(f)) std::this_thread::yield();
     assert(!f.present && f.commands.size()==2 && f.completion);
+    assert(f.reason==SubmissionReason::VisibilityReport && f.sync.visibility_reports==1);
     assert(kernel::R32(report+12)==0xffffffff);
     assert(f.commands[0].visibility && f.commands[1].visibility);
     f.commands[0].visibility->set_value(21); f.commands[1].visibility->set_value(34);
@@ -397,6 +400,8 @@ int main() {
     f.completion->set_value(); empty_report.join();
     assert(kernel::R32(report+8)==0 && kernel::R32(report+12)==0);
     s.simple[gpu::kMCountEnable/4]=0;
+    backend->Present(s.rt); assert(Take(f));
+    assert(f.sync.visibility_report_wait_ms>=0 && f.reason==SubmissionReason::Present);
     // EN: Demonstrate why this diagnostic must never become the default.
     // PT-BR: Demonstra por que o diagnóstico nunca pode ser o padrão.
     auto diagnostic=gpu::CreateBackend();

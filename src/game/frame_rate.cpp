@@ -22,6 +22,7 @@
 #include "kernel/kernel.h"
 #ifdef PGR1_NATIVE_VULKAN
 #include "../../portable/linux/vulkan/quality_state.h"
+#include "../../portable/include/pgr/runtime/simulation_clock.h"
 #endif
 
 namespace pgr1 {
@@ -103,8 +104,14 @@ bool FollowClock() {
 X86_EXTERN_FUNC(PGR1_ORIG(000C5480, 000C54A0, 000C2A80));
 X86_FUNC(PGR1_FN(000C5480, 000C54A0, 000C2A80)) {
     uint32_t ret = kernel::R32(ctx.esp);
+#ifdef PGR1_NATIVE_VULKAN
+    const bool scene_tick=ret==PGR1_VA(0xC97B1,0xC97D1,0xC6A81) || ret==PGR1_VA(0xC976E,0xC978E,0xC6A3E);
+#endif
     if (!FollowClock() || (ret != PGR1_VA(0xC97B1, 0xC97D1, 0xC6A81) && ret != PGR1_VA(0xC976E, 0xC978E, 0xC6A3E))) {
         PGR1_ORIG(000C5480, 000C54A0, 000C2A80)(ctx, base);
+#ifdef PGR1_NATIVE_VULKAN
+        if(scene_tick)pgr::runtime::simulation_ticks.fetch_add(1,std::memory_order_relaxed);
+#endif
         return;
     }
     ApplyHz();
@@ -142,6 +149,9 @@ X86_FUNC(PGR1_FN(000C5480, 000C54A0, 000C2A80)) {
             kernel::W32(ctx.esp, ret);
         }
         PGR1_ORIG(000C5480, 000C54A0, 000C2A80)(ctx, base);
+#ifdef PGR1_NATIVE_VULKAN
+        pgr::runtime::simulation_ticks.fetch_add(1,std::memory_order_relaxed);
+#endif
     }
 }
 

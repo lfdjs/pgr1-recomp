@@ -55,3 +55,7 @@ if(TARGET pgr1_gldirect_renderer_test AND EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime
     target_include_directories(pgr1_gldirect_renderer_test PRIVATE "${PGR1_SDK_SOURCE_DIR}/runtime")
     target_compile_definitions(pgr1_gldirect_renderer_test PRIVATE PGR1_TEST_SDK_SHADERS=1)
 endif()
+
+if(EXISTS "${PGR1_SDK_SOURCE_DIR}/runtime/gpu/vertex.cpp")
+    include("${CMAKE_CURRENT_LIST_DIR}/../../../cmake/sdk_vertex_assembly_tests.cmake")
+endif()

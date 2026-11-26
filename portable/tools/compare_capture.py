@@ -20,7 +20,8 @@ COUNTS = ("supported_draws", "rejected_draws", "texture_static_binds", "texture_
           "texture_tracker_exact_fallbacks", "texture_tracker_uncovered_ranges",
           "texture_tracker_false_positives", "texture_tracker_false_negatives",
           "texture_tracker_monitored_writes", "texture_tracker_dirty_pages",
-          "descriptor_creates", "staging_allocations", "staging_reuses")
+          "descriptor_creates", "staging_allocations", "staging_reuses",
+          "geometry_vertices", "geometry_indices", "geometry_bytes")
 GAUGES = ("texture_cache_entries_peak", "texture_tracker_tracked_bytes")
 STATUS = ("presented", "present_requested", "acquire_timeout", "render_failed")
 SCENE_NOTICE = ("Scene equivalence NOT established by frame numbers / "

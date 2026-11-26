@@ -21,6 +21,14 @@ public:
         // EN: Vulkan draw-state calls avoided inside unchanged render passes.
         // PT-BR: Comandos de estado Vulkan poupados no mesmo render pass.
         std::uint64_t pipeline_bind_skips=0, viewport_set_skips=0, blend_set_skips=0;
+        // EN: Work and reusable resources per submission, including hidden GPU prefixes.
+        // PT-BR: Trabalho/recursos por submissao, incluindo prefixos sem apresentacao.
+        std::uint64_t visibility_queries=0, visibility_query_pool_creates=0,
+            visibility_query_pool_reuses=0, visibility_deferred_submissions=0;
+        std::uint64_t readback_requests=0, readback_bytes=0, readback_buffer_creates=0,
+            readback_buffer_reuses=0, submissions=0, nonpresent_submissions=0,
+            pipeline_creates=0;
+        double readback_resolve_ms=0;
         bool presented=false;
         bool acquire_timeout=false;
         std::vector<GpuSample> gpu_samples;

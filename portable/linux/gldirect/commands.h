@@ -6,6 +6,7 @@
 #include <string>
 #include <future>
 #include <chrono>
+#include "sync_profile.h"
 
 namespace pgr::gldirect {
 // Owned, API-neutral draw data. Guest pointers and SDK objects never reach GL.
@@ -73,6 +74,10 @@ struct Command {
     std::uint32_t depth_slope_offset=~0u;
 };
 struct Submission {
+    SubmissionReason reason=SubmissionReason::Present;
+    std::uint64_t guest_vblank=0, simulation_tick=0;
+    SyncProfile sync;
+    std::uint64_t geometry_vertices=0, geometry_indices=0, geometry_bytes=0;
     std::uint64_t frame=0, draws=0, unsupported=0;
     std::uint64_t supported=0, rejected_draws=0, draw_ns=0, max_draw_ns=0, decode_ns=0, queue_wait_ns=0;
     std::uint64_t texture_check_ns=0, assemble_ns=0;

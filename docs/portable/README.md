@@ -57,6 +57,16 @@ patch opt-in, metadados de falhas e instruções de validação; cobertura ainda
 [Auditoria em sombra do diário (04D.19E)](30-journal-shadow-audit.md):
 previsões por sequência de página e comparação exata preservada.
 
+[Performance Overhaul II (04D.21)](37-performance-handoff.md):
+[REP/SIMD e cobertura de memória](31-memory-coherency-production.md),
+[queries/readback Vulkan](32-london-sun-visibility-optimization.md),
+[primitivas convertidas nativas](33-geometry-capture-v2.md),
+[cache de stages SPIR-V](35-vulkan-pipeline-optimization.md) e
+[validação de Londres/sincronização](36-road-to-60fps-validation.md).
+O gitlink público é preservado; o patch SDK cumulativo inclui as mudanças
+locais anteriores. Fast hits guest e 60 FPS em corrida completa continuam
+pendentes; consulte evidências e limites no handoff.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.

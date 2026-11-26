@@ -1,0 +1,25 @@
+# EN: Verified USA 1.0 route from the isolated Player test HDD used in 04D.21.
+# Quick Race / Easy / London Westminster (Big Ben) / MINI Cooper S / Auto.
+# The seed must initially select San Francisco: UP at 1350 selects London.
+# Verify the city screen around vblank 1400 before benchmarking another save.
+# Input time is guest vblanks (60 Hz), independent of presentation frame IDs.
+# Straight acceleration is a repeatable workload, NOT a completed-race route.
+# PT-BR: Rota verificada com o HDD Player isolado da 04D.21 (USA 1.0).
+# O seed deve selecionar San Francisco inicialmente. Confirme London/Westminster
+# por captura no vblank 1400 antes de medir outro save. Acelerar em linha reta
+# serve como carga repetível; não representa uma corrida completa.
+180 START 1
+360 A 1
+540 A 1
+720 A 1
+900 UP 1
+1080 A 1
+1260 A 1
+1350 UP 1
+1440 A 1
+1620 A 1
+1800 A 1
+1980 A 1
+2160 A 1
+2340 A 1
+2520 RT 9000

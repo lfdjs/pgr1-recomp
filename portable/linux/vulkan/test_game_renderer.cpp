@@ -1,6 +1,7 @@
 // Synthetic SDK shader/command integration tests. This is not game evidence.
 #include "game_renderer.h"
 #include "quality_state.h"
+#include "gpu_completion_policy.h"
 #include "../gldirect/commands.h"
 #include "../gldirect/draw_constants.h"
 #include "../gldirect/shader_compiler.h"
@@ -149,18 +150,85 @@ int main() {
     pixels=Execute(renderer,{Clear(),visible});Pixel(pixels,16,16,0xffff0000);
     assert(visible_count.wait_for(std::chrono::seconds(1))==std::future_status::ready);
     assert(visible_count.get()==1024);
+    assert(renderer.LastStats().visibility_query_pool_creates==1);
+    assert(renderer.LastStats().visibility_queries==1);
+    assert(renderer.LastStats().readback_buffer_creates==0);
+    assert(renderer.LastStats().readback_buffer_reuses==1);
     auto hidden=blue;
     hidden.visibility=std::make_shared<std::promise<uint64_t>>();
     auto hidden_count=hidden.visibility->get_future();
     pixels=Execute(renderer,{hidden});Pixel(pixels,16,16,0xffff0000);
     assert(hidden_count.wait_for(std::chrono::seconds(1))==std::future_status::ready);
     assert(hidden_count.get()==0);
+    assert(renderer.LastStats().visibility_query_pool_creates==0);
+    assert(renderer.LastStats().visibility_query_pool_reuses==1);
     auto clipped=green;
     clipped.visibility=std::make_shared<std::promise<uint64_t>>();
     auto clipped_count=clipped.visibility->get_future();
     pixels=Execute(renderer,{clipped});Pixel(pixels,2,2,0xff00ff00);
     assert(clipped_count.wait_for(std::chrono::seconds(1))==std::future_status::ready);
     assert(clipped_count.get()==64);
+
+    // EN: Grow the pool beyond its initial capacity, then reuse it for fewer
+    // queries. Each result belongs to its own reset range and real draw.
+    // PT-BR: Amplie o pool alem da capacidade inicial e reutilize com menos
+    // consultas. Cada resultado pertence ao intervalo reiniciado e draw real.
+    for(unsigned count:{20u,3u}) {
+        std::vector<Command> draws{Clear()};
+        std::vector<std::future<uint64_t>> counts;
+        for(unsigned i=0;i<count;i++) {
+            auto draw=red;draw.pipeline.depth=false;
+            draw.visibility=std::make_shared<std::promise<uint64_t>>();
+            counts.push_back(draw.visibility->get_future());
+            draws.push_back(std::move(draw));
+        }
+        pixels=Execute(renderer,std::move(draws));Pixel(pixels,16,16,0xffff0000);
+        for(auto& result:counts)assert(result.get()==1024);
+        assert(renderer.LastStats().visibility_queries==count);
+        assert(renderer.LastStats().visibility_query_pool_creates==(count==20));
+        assert(renderer.LastStats().visibility_query_pool_reuses==(count==3));
+    }
+
+    // EN: Readback slots must not alias when two ordered reads precede the
+    // same fence; after retirement both slots are reused with owned results.
+    // PT-BR: Duas leituras ordenadas antes da mesma fence nao podem compartilhar
+    // bytes. Apos conclusao, ambos os slots reutilizam memoria com pixels proprios.
+    for(unsigned repeat=0;repeat<2;repeat++) {
+        Command first;first.kind=Command::Kind::Readback;first.target=target;
+        first.readback=std::make_shared<std::promise<std::vector<uint32_t>>>();
+        auto first_pixels=first.readback->get_future();
+        Command second=first;
+        second.readback=std::make_shared<std::promise<std::vector<uint32_t>>>();
+        auto second_pixels=second.readback->get_future();
+        Submission reads;reads.present=false;
+        reads.commands={Clear(0xffff0000),first,Clear(0xff0000ff),second};
+        assert(renderer.Render(reads));
+        Pixel(first_pixels.get(),16,16,0xffff0000);
+        Pixel(second_pixels.get(),16,16,0xff0000ff);
+        assert(renderer.LastStats().readback_requests==2);
+        assert(renderer.LastStats().readback_bytes==2*size*size*4);
+        assert(renderer.LastStats().readback_buffer_creates==(repeat==0));
+        assert(renderer.LastStats().readback_buffer_reuses==(repeat==0?1:2));
+    }
+    // EN: Overflowing the bounded retained slots falls back to fence-owned
+    // transient buffers, preserving each ordered snapshot on repeated use.
+    // PT-BR: Exceder slots persistentes usa buffers temporarios ate a fence,
+    // preservando cada snapshot ordenado inclusive na reutilizacao.
+    for(unsigned repeat=0;repeat<2;repeat++) {
+        Submission many;many.present=false;
+        std::vector<std::future<std::vector<uint32_t>>> results;
+        for(unsigned i=0;i<10;i++) {
+            many.commands.push_back(Clear(0xff000000u|i));
+            Command read;read.kind=Command::Kind::Readback;read.target=target;
+            read.readback=std::make_shared<std::promise<std::vector<uint32_t>>>();
+            results.push_back(read.readback->get_future());many.commands.push_back(std::move(read));
+        }
+        assert(renderer.Render(many));
+        for(unsigned i=0;i<results.size();i++)Pixel(results[i].get(),16,16,0xff000000u|i);
+        assert(renderer.LastStats().readback_requests==10);
+        assert(renderer.LastStats().readback_buffer_creates==(repeat==0?8:2));
+        assert(renderer.LastStats().readback_buffer_reuses==(repeat==0?2:8));
+    }
 
     // Basic stencil write then compare, without changing the color attachment.
     auto mask=Quad(state,shaders,{1,1,1,1});
@@ -500,17 +568,71 @@ int main() {
     completed.get();
     pixels=Execute(renderer,{});Pixel(pixels,16,16,0xffff0000);
 
+    // EN: Visibility without a readback keeps real results pending until the
+    // owning consumer polls, the next submission waits, or Finish drains it.
+    // PT-BR: Visibilidade sem readback fica pendente ate sondagem do consumidor,
+    // espera da proxima submissao ou drenagem explicita de Finish.
+    for(bool finish:{false,true}) {
+        auto counted=red;
+        counted.visibility=std::make_shared<std::promise<uint64_t>>();
+        auto result=counted.visibility->get_future();
+        Submission prefix;prefix.present=false;prefix.commands={Clear(),counted};
+        prefix.completion=std::make_shared<std::promise<void>>();
+        auto completion=prefix.completion->get_future();
+        assert(renderer.Render(prefix));
+        assert(renderer.LastStats().submissions==1 && renderer.LastStats().nonpresent_submissions==1);
+        if(pgr::vulkan::performance::AsynchronousGpuCompletion(std::getenv("PGR1_VK_PIPELINED"))) {
+            assert(result.wait_for(std::chrono::seconds(0))==std::future_status::timeout);
+            assert(completion.wait_for(std::chrono::seconds(0))==std::future_status::timeout);
+            assert(renderer.LastStats().visibility_deferred_submissions==1);
+        }
+        if(finish)renderer.Finish();
+        else {
+            const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+            while(result.wait_for(std::chrono::seconds(0))!=std::future_status::ready &&
+                  std::chrono::steady_clock::now()<until) {
+                renderer.PollCompletion();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        assert(result.wait_for(std::chrono::seconds(0))==std::future_status::ready);
+        assert(result.get()==1024);completion.get();
+    }
+    // EN: Shutdown drains the final GPU prefix even when the caller retains
+    // its promises and never explicitly calls Finish or PollCompletion.
+    // PT-BR: Encerramento drena o ultimo prefixo mesmo quando o chamador retém
+    // promessas e nao chama Finish ou PollCompletion explicitamente.
+    auto shutdown_query=red;
+    shutdown_query.visibility=std::make_shared<std::promise<uint64_t>>();
+    auto shutdown_count=shutdown_query.visibility->get_future();
+    Submission shutdown;shutdown.present=false;shutdown.commands={Clear(),shutdown_query};
+    shutdown.completion=std::make_shared<std::promise<void>>();
+    auto shutdown_done=shutdown.completion->get_future();
+    {
+        pgr::vulkan::Renderer closing(nullptr);
+        assert(closing.Render(shutdown));
+    }
+    assert(shutdown_count.wait_for(std::chrono::seconds(0))==std::future_status::ready);
+    assert(shutdown_count.get()==1024);shutdown_done.get();
+
     // An unsupported essential clear must resolve every waiting CPU promise
     // with an exception instead of corrupting channels or leaving Sync blocked.
     auto partial=Clear(0xff00ff00);partial.flags=0x20;
     Command failed_read;failed_read.kind=Command::Kind::Readback;failed_read.target=target;
     failed_read.readback=std::make_shared<std::promise<std::vector<uint32_t>>>();
     auto failed=failed_read.readback->get_future();
-    Submission rejected;rejected.present=false;rejected.commands={partial,failed_read};
+    auto failed_query=red;
+    failed_query.visibility=std::make_shared<std::promise<uint64_t>>();
+    auto failed_count=failed_query.visibility->get_future();
+    Submission rejected;rejected.present=false;rejected.commands={partial,failed_read,failed_query};
     assert(!renderer.Render(rejected));
     assert(failed.wait_for(std::chrono::seconds(1))==std::future_status::ready);
     bool exception=false;
     try { (void)failed.get(); } catch(const std::exception&) { exception=true; }
+    assert(exception);
+    assert(failed_count.wait_for(std::chrono::seconds(1))==std::future_status::ready);
+    exception=false;
+    try { (void)failed_count.get(); } catch(const std::exception&) { exception=true; }
     assert(exception);
 
     std::puts("Vulkan offscreen SDK integration passed: indexed/nonindexed draws, retained targets, "

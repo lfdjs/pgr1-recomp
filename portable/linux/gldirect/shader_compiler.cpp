@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include "shader_worker_policy.h"
 #include "shader_pair_pool.h"
+#include "shader_stage_cache.h"
 #include <spawn.h>
 #include <sys/wait.h>
 #include <sys/file.h>
@@ -91,7 +92,8 @@ std::string CompileHlsl(const std::string& source, bool vertex) {
     return output;
 }
 
-std::string CompileHlslSpirv(const std::string& source, bool vertex) {
+static std::string CompileHlslSpirvUncached(const std::string& source,bool vertex,
+                                          const std::filesystem::path& dir) {
     const auto start=std::chrono::steady_clock::now();
     std::string mapped=source;
     // glslang's automatic input mapping compacts unused NV2A registers, while
@@ -114,7 +116,6 @@ std::string CompileHlslSpirv(const std::string& source, bool vertex) {
     uint64_t hash=1469598103934665603ull;
     for(unsigned char c:input) { hash^=c; hash*=1099511628211ull; }
     std::ostringstream name; name<<std::hex<<hash<<(vertex?".vert":".frag");
-    const auto dir=std::filesystem::current_path()/"shadercache-vk-v1";
     std::filesystem::create_directories(dir);
     const auto base=dir/name.str();
     auto hlsl=base; hlsl+=".hlsl"; auto spv=base; spv+=".spv";
@@ -146,7 +147,26 @@ std::string CompileHlslSpirv(const std::string& source, bool vertex) {
     return binary;
 }
 
+static ShaderStageCache& SpirvStages() {
+    static ShaderStageCache cache;
+    return cache;
+}
+
+std::string CompileHlslSpirv(const std::string& source,bool vertex) {
+    // EN: Different working directories own independent disk-cache namespaces.
+    // PT-BR: Diretorios de trabalho diferentes possuem caches em disco distintos.
+    const auto directory=std::filesystem::current_path()/"shadercache-vk-v1";
+    return SpirvStages().Get(source,vertex,directory.string(),[&] {
+        return CompileHlslSpirvUncached(source,vertex,directory);
+    });
+}
+
 std::shared_future<std::array<std::string,2>> CompileHlslPairSpirvAsync(std::string vertex, std::string fragment) {
+    // EN: Construct before Workers so its destructor joins queued compiles
+    // before the process-local stage cache is destroyed.
+    // PT-BR: Construa antes de Workers para aguardar os jobs na destruicao
+    // dos workers antes de destruir o cache de stages do processo.
+    (void)SpirvStages();
     // Generation stays on the SDK thread; only immutable HLSL crosses to this
     // worker. No process launch/compiler wait occurs on the guest draw path.
     // EN: Compile independent immutable HLSL pairs in parallel. Keep the

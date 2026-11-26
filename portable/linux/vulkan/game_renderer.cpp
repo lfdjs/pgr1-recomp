@@ -140,8 +140,10 @@ struct Renderer::Impl {
     uint32_t descriptor_capacity=0; // 04D.2: reset instead of recreating each submission
     VkQueryPool queries=VK_NULL_HANDLE;
     VkQueryPool occlusion_pool=VK_NULL_HANDLE;
+    uint32_t occlusion_capacity=0;
     struct Counted { std::shared_ptr<std::promise<uint64_t>> promise; uint32_t index;unsigned samples=1; };
     std::vector<Counted> counted;
+    std::vector<uint64_t> query_results;
     uint64_t query_frame=0;
     Stats stats;
     PresentCounter present_counter;
@@ -192,13 +194,24 @@ struct Renderer::Impl {
     std::set<std::string> warnings;
     struct Read { std::shared_ptr<std::promise<std::vector<uint32_t>>> promise; Buffer* buffer; ImagePtr image; VkDeviceSize stencil_offset; bool guest_size; };
     std::vector<Read> reads;
+    // EN: Distinct slots preserve multiple reads in one submission; reuse only
+    // after Wait() retires the previous fence and publishes owned CPU pixels.
+    // PT-BR: Slots separados preservam leituras da mesma submissao; reutilize
+    // apenas apos Wait() concluir a fence anterior e publicar pixels proprios.
+    std::vector<std::unique_ptr<Buffer>> readback_storage;
     struct Offset { VkDeviceSize vertex=0,index=0,vc=0,dc=0; };
     std::vector<Offset> offsets;
     Buffer* staged=nullptr;
     // 04D.2 persistent GPU upload / descriptor resources; see docs/portable/08-vulkan-performance.md
     explicit Impl(SDL_Window* w):window(w){}
     ~Impl() {
-        if(device) vkDeviceWaitIdle(device);
+        if(device) {
+            const auto status=vkDeviceWaitIdle(device);
+            try {
+                Check(status,"renderer shutdown / encerramento do renderer");
+                Wait();
+            } catch(...) { CancelPending(std::current_exception()); }
+        }
         postfx.reset(); ReleaseFrame(true); stage_storage.reset(); front.reset(); white.reset(); white_cube.reset(); textures.clear(); dynamic_cubes.clear(); colors.clear(); depths.clear();
         if(device) {
             for(auto& [k,p]:pipelines) vkDestroyPipeline(device,p,nullptr);
@@ -624,7 +637,7 @@ struct Renderer::Impl {
         VkDynamicState states[]={VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR,VK_DYNAMIC_STATE_BLEND_CONSTANTS};
         VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO}; dynamic.dynamicStateCount=3; dynamic.pDynamicStates=states;
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO}; info.stageCount=2; info.pStages=stages; info.pVertexInputState=&vertex; info.pInputAssemblyState=&assembly; info.pViewportState=&viewport; info.pRasterizationState=&raster; info.pMultisampleState=&ms; info.pDepthStencilState=&ds; info.pColorBlendState=&bc; info.pDynamicState=&dynamic; info.layout=layout; info.renderPass=pass;
-        VkPipeline result=VK_NULL_HANDLE; auto start=Clock::now(); Check(vkCreateGraphicsPipelines(device,pipeline_cache,1,&info,nullptr,&result),"SDK graphics pipeline"); stats.shader_ms+=Millis(start); pipelines[key]=result; return result;
+        VkPipeline result=VK_NULL_HANDLE; auto start=Clock::now(); Check(vkCreateGraphicsPipelines(device,pipeline_cache,1,&info,nullptr,&result),"SDK graphics pipeline"); stats.shader_ms+=Millis(start); ++stats.pipeline_creates; pipelines[key]=result; return result;
     }
     VkSampler Sampler(const Texture& t,unsigned levels) {
         const unsigned forced_aniso=quality::aniso.load(std::memory_order_relaxed);
@@ -817,8 +830,21 @@ struct Renderer::Impl {
         }
         const uint32_t query_count=std::count_if(frame.commands.begin(),frame.commands.end(),[](const auto& c){return bool(c.visibility);});
         if(query_count) {
-            VkQueryPoolCreateInfo query{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; query.queryType=VK_QUERY_TYPE_OCCLUSION; query.queryCount=query_count;
-            Check(vkCreateQueryPool(device,&query,nullptr,&occlusion_pool),"precise occlusion pool");
+            // EN: The single in-flight fence was retired before Stage(). Reset
+            // only the used range; keep the pool until growth or shutdown.
+            // PT-BR: A unica fence em voo terminou antes de Stage(). Reinicie
+            // apenas o intervalo usado; preserve o pool ate crescer ou encerrar.
+            if(!occlusion_pool || occlusion_capacity<query_count) {
+                const auto grown=occlusion_capacity<=UINT32_MAX/2?occlusion_capacity*2:UINT32_MAX;
+                const auto capacity=std::max(query_count,std::max(16u,grown));
+                VkQueryPoolCreateInfo query{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+                query.queryType=VK_QUERY_TYPE_OCCLUSION; query.queryCount=capacity;
+                VkQueryPool replacement=VK_NULL_HANDLE;
+                Check(vkCreateQueryPool(device,&query,nullptr,&replacement),"precise occlusion pool");
+                if(occlusion_pool)vkDestroyQueryPool(device,occlusion_pool,nullptr);
+                occlusion_pool=replacement;occlusion_capacity=capacity;
+                ++stats.visibility_query_pool_creates;
+            } else ++stats.visibility_query_pool_reuses;
             vkCmdResetQueryPool(cmd,occlusion_pool,0,query_count);
         }
     }
@@ -826,13 +852,43 @@ struct Renderer::Impl {
         VkDeviceSize bytes=VkDeviceSize(image->w)*image->h*(image->format==VK_FORMAT_D16_UNORM || image->format==VK_FORMAT_R5G6B5_UNORM_PACK16?2:4);
         VkDeviceSize stencil_offset=(bytes+3)&~VkDeviceSize(3);
         bool stencil=bool(image->aspect&VK_IMAGE_ASPECT_STENCIL_BIT);
-        auto* buffer=NewBuffer(stencil?stencil_offset+VkDeviceSize(image->w)*image->h:bytes,VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        const VkDeviceSize required=stencil?stencil_offset+VkDeviceSize(image->w)*image->h:bytes;
+        const auto slot=reads.size();
+        // EN: Retain at most eight slots / 64 MiB. Oversized or additional
+        // reads keep the ordinary transient lifetime until the same fence.
+        // PT-BR: Retenha ate oito slots / 64 MiB. Leituras maiores/adicionais
+        // conservam o lifetime temporario normal ate a mesma fence.
+        constexpr size_t max_slots=8;
+        constexpr VkDeviceSize budget=64*1024*1024;
+        VkDeviceSize occupied=0;
+        for(const auto& storage:readback_storage)if(storage)occupied+=storage->size;
+        if(slot<max_slots && slot==readback_storage.size())readback_storage.emplace_back();
+        Buffer* buffer=nullptr;
+        if(slot<max_slots && (!readback_storage[slot] || readback_storage[slot]->size<required)) {
+            auto& storage=readback_storage[slot];
+            const VkDeviceSize previous=storage?storage->size:0;
+            const VkDeviceSize grown=previous<=budget/2?previous*2:previous;
+            const VkDeviceSize capacity=std::max(required,grown);
+            if(capacity<=budget-(occupied-previous)) {
+                storage=MakeBuffer(capacity,VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+                buffer=storage.get();
+                ++stats.readback_buffer_creates;
+            }
+        } else if(slot<max_slots) {
+            buffer=readback_storage[slot].get();++stats.readback_buffer_reuses;
+        }
+        if(!buffer) {
+            buffer=NewBuffer(required,VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            ++stats.readback_buffer_creates;
+        }
+        ++stats.readback_requests;stats.readback_bytes+=required;
         Barrier(); VkBufferImageCopy copies[2]{}; copies[0].imageSubresource={image->aspect&~VK_IMAGE_ASPECT_STENCIL_BIT,0,0,1}; copies[0].imageExtent={image->w,image->h,1};
         copies[1]=copies[0]; copies[1].bufferOffset=stencil_offset; copies[1].imageSubresource.aspectMask=VK_IMAGE_ASPECT_STENCIL_BIT;
         vkCmdCopyImageToBuffer(cmd,image->image,VK_IMAGE_LAYOUT_GENERAL,buffer->buffer,stencil?2:1,copies);
         reads.push_back({std::move(promise),buffer,image,stencil_offset,guest_size});
     }
     void ResolveReads() {
+        const auto start=Clock::now();
         for(auto& r:reads) {
             std::vector<uint32_t> pixels(size_t(r.image->w)*r.image->h);
             if(r.image->format==VK_FORMAT_D16_UNORM) { auto* p=static_cast<const uint16_t*>(r.buffer->mapped); std::copy_n(p,pixels.size(),pixels.begin()); }
@@ -856,6 +912,24 @@ struct Renderer::Impl {
             r.promise->set_value(std::move(pixels));
         }
         reads.clear();
+        stats.readback_resolve_ms+=Millis(start);
+    }
+    void CancelPending(const std::exception_ptr& error) {
+        // EN: A failed retirement may belong to the previous submission, whose
+        // promises are no longer present in the current producer command list.
+        // PT-BR: Uma conclusao que falhou pode pertencer a submissao anterior;
+        // suas promessas ja nao estao na lista de comandos atual do produtor.
+        for(const auto& read:reads) {
+            try { read.promise->set_exception(error); }catch(const std::future_error&){}
+        }
+        for(const auto& query:counted) {
+            try { query.promise->set_exception(error); }catch(const std::future_error&){}
+        }
+        if(pending_completion) {
+            try { pending_completion->set_exception(error); }catch(const std::future_error&){}
+            pending_completion.reset();
+        }
+        reads.clear();counted.clear();
     }
     void Wait() {
         if(!pending)return; auto start=Clock::now(); Check(vkWaitForFences(device,1,&fence,VK_TRUE,UINT64_MAX),"wait GPU fence"); stats.fence_ms+=Millis(start); pending=false;
@@ -864,11 +938,11 @@ struct Renderer::Impl {
             stats.gpu_samples.push_back({query_frame,stats.gpu_ms}); }
         ResolveReads();
         if(!counted.empty()) {
-            std::vector<uint64_t> values(counted.size());
-            Check(vkGetQueryPoolResults(device,occlusion_pool,0,values.size(),values.size()*sizeof(uint64_t),values.data(),sizeof(uint64_t),VK_QUERY_RESULT_64_BIT),"precise visibility results");
+            query_results.resize(counted.size());
+            Check(vkGetQueryPoolResults(device,occlusion_pool,0,query_results.size(),query_results.size()*sizeof(uint64_t),query_results.data(),sizeof(uint64_t),VK_QUERY_RESULT_64_BIT),"precise visibility results");
             // Host MSAA increases passing sample counts; expose the equivalent
             // covered-pixel area to the unchanged Xbox visibility consumers.
-            for(const auto& result:counted)result.promise->set_value((values[result.index]+result.samples/2)/result.samples);
+            for(const auto& result:counted)result.promise->set_value((query_results[result.index]+result.samples/2)/result.samples);
             counted.clear();
         }
         if(pending_completion) { pending_completion->set_value(); pending_completion.reset(); }
@@ -888,8 +962,12 @@ struct Renderer::Impl {
             } else ++it;
         }
         retired_postfx.clear();buffers.clear(); retained.clear(); reads.clear();
-        if(occlusion_pool)vkDestroyQueryPool(device,occlusion_pool,nullptr);
-        occlusion_pool=VK_NULL_HANDLE; counted.clear();
+        if(final) {
+            if(occlusion_pool)vkDestroyQueryPool(device,occlusion_pool,nullptr);
+            occlusion_pool=VK_NULL_HANDLE;occlusion_capacity=0;
+            readback_storage.clear();
+        }
+        counted.clear();
         for(auto it=textures.begin();it!=textures.end();)if(it->first.expired())it=textures.erase(it);else ++it;
         // Do not retain obsolete cubemaps after the producer drops its CPU
         // snapshot. Active snapshots remain cached across game submissions.
@@ -964,6 +1042,7 @@ struct Renderer::Impl {
         VkPipelineStageFlags stage=VK_PIPELINE_STAGE_TRANSFER_BIT|VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; VkSubmitInfo info{VK_STRUCTURE_TYPE_SUBMIT_INFO}; info.commandBufferCount=1; info.pCommandBuffers=&cmd;
         if(present){info.waitSemaphoreCount=1; info.pWaitSemaphores=&acquired; info.pWaitDstStageMask=&stage; info.signalSemaphoreCount=1; info.pSignalSemaphores=&finished.at(image_index);}
         Check(vkQueueSubmit(queue,1,&info,fence),"submit native game commands"); pending=true; query_frame=frame;
+        ++stats.submissions;if(!present)++stats.nonpresent_submissions;
         if(present) {
             VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR}; pi.waitSemaphoreCount=1; pi.pWaitSemaphores=&finished.at(image_index); pi.swapchainCount=1; pi.pSwapchains=&swapchain; pi.pImageIndices=&image_index;
             auto start=Clock::now(); VkResult r=vkQueuePresentKHR(queue,&pi); stats.present_ms=Millis(start);
@@ -971,7 +1050,14 @@ struct Renderer::Impl {
             stats.presented=r==VK_SUCCESS || r==VK_SUBOPTIMAL_KHR;
             if(stats.presented)present_counter.Presented(std::chrono::duration<double>(Clock::now().time_since_epoch()).count());
         }
-        if(!reads.empty() || !counted.empty())Wait();
+        // EN: A visibility draw alone does not make the guest consume its
+        // result. GetReport still waits for the ordered completion future;
+        // idle polling or the next Render resolves it after the real fence.
+        // PT-BR: Um draw contado nao implica consumo imediato pelo jogo.
+        // GetReport continua aguardando a promessa ordenada; sondagem ociosa
+        // ou o proximo Render conclui os resultados apos a fence real.
+        if(!reads.empty() || (!counted.empty() && !async_completion))Wait();
+        else if(!counted.empty())++stats.visibility_deferred_submissions;
     }
     void RecordPresent(unsigned image_index) {
         const bool fxaa=quality::fxaa.load(std::memory_order_relaxed);
@@ -1147,7 +1233,7 @@ struct Renderer::Impl {
                 else { vkCmdDrawIndexed(cmd,c.indices.size(),1,0,0,0); ++stats.indexed; }
             };
             if(p.scissors.empty())draw(p.viewport); else for(auto r:p.scissors)draw(r);
-            if(c.visibility) { vkCmdEndQuery(cmd,occlusion_pool,query); counted.push_back({c.visibility,query,unsigned(Samples(image_extent))}); }
+            if(c.visibility) { vkCmdEndQuery(cmd,occlusion_pool,query); counted.push_back({c.visibility,query,unsigned(Samples(image_extent))}); ++stats.visibility_queries; }
             if(!batched || i+1==batch_end)vkCmdEndRenderPass(cmd);
             color_versions[c.target.color]=++color_serial; ++stats.accepted;
         }
@@ -1173,10 +1259,10 @@ struct Renderer::Impl {
         Submit(present,image_index,frame.frame);
         // EN: GPU execution may overlap the next guest capture. Completion
         // promises are drained by the next Render(), idle PollCompletion(),
-        // and Finish(). Readback/visibility queries still wait in Submit().
+        // and Finish(). CPU readbacks still wait in Submit().
         // PT-BR: A GPU pode trabalhar enquanto o jogo captura os proximos draws.
         // As promessas concluem no proximo Render(), na sondagem ociosa ou no
-        // Finish(). Leituras/consultas obrigatorias ainda esperam em Submit().
+        // Finish(). Readbacks CPU obrigatorios ainda esperam em Submit().
         if(pending_completion && !async_completion)Wait();
         stats.presented_fps=present_counter.Fps();stats.presented_frame_ms=present_counter.FrameMs();
         stats.cpu_ms=Millis(total); return true;
@@ -1190,13 +1276,14 @@ bool Renderer::Render(Submission& frame) {
         auto error=std::current_exception(); for(auto& c:frame.commands)if(c.readback) { try { c.readback->set_exception(error); }catch(const std::future_error&){} }
         if(frame.completion) { try { frame.completion->set_exception(error); }catch(const std::future_error&){} }
         for(auto& c:frame.commands)if(c.visibility) { try { c.visibility->set_exception(error); }catch(const std::future_error&){} }
-        impl_->pending_completion.reset();
+        impl_->CancelPending(error);
         Fail(std::string("native Vulkan: ")+e.what()); std::fprintf(stderr,"native Vulkan failed: %s\n",e.what()); return false;
     }
 }
 bool Renderer::PollCompletion() {
     auto& g=*impl_;
     if(!g.pending)return false;
+    try {
     // EN: Poll on the owning SDL/Vulkan thread only; do not wait if GPU is busy.
     // PT-BR: Consulte apenas na thread dona do Vulkan, sem bloquear a GPU ocupada.
     const VkResult status=vkGetFenceStatus(g.device,g.fence);
@@ -1209,10 +1296,14 @@ bool Renderer::PollCompletion() {
     g.stats.gpu_samples.clear();
     g.Wait(); // Completes pending SDK resource promises / conclui promessas do SDK.
     return true;
+    } catch(...) { g.CancelPending(std::current_exception());throw; }
 }
 void Renderer::Resize(){impl_->resize=true;}
 void Renderer::SetAspect(float aspect){impl_->output_aspect=std::isfinite(aspect) && aspect>0?aspect:0;}
-void Renderer::Finish(){impl_->stats={};impl_->Wait();}
+void Renderer::Finish(){
+    impl_->stats={};
+    try {impl_->Wait();}catch(...) {impl_->CancelPending(std::current_exception());throw;}
+}
 const Renderer::Stats& Renderer::LastStats()const{return impl_->stats;}
 Renderer::DisplayPixels Renderer::ReadDisplay() {
     auto& g=*impl_;g.Wait();if(!g.front)return {};
