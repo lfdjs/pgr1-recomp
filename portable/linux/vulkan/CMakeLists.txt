@@ -89,6 +89,9 @@ if(BUILD_TESTING)
   add_executable(pgr1_vk_draw_bind_state_test test_draw_bind_state.cpp)
   target_compile_options(pgr1_vk_draw_bind_state_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
   add_test(NAME vk_draw_state_reuse COMMAND pgr1_vk_draw_bind_state_test)
+  add_executable(pgr1_vk_pipeline_cache_file_test test_pipeline_cache_file.cpp)
+  target_compile_options(pgr1_vk_pipeline_cache_file_test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+  add_test(NAME vk_pipeline_cache_file_validation COMMAND pgr1_vk_pipeline_cache_file_test)
   # EN: Verify real concurrent shader jobs without a Vulkan device.
   # PT-BR: Teste jobs de shader paralelos sem exigir uma GPU.
   find_package(Threads REQUIRED)
