@@ -6,6 +6,11 @@ cd "$ROOT"
 BUILD="${PGR1_BUILD_DIR:-$ROOT/.local/harness_gldirect}"
 [[ "$BUILD" = /* ]] || BUILD="$ROOT/$BUILD"
 RUN="${PGR1_RUN_DIR:-$ROOT/.local/run/linux}"
+CPU_PROFILE="${PGR1_GL_CPU_PROFILE:-generic}"
+GUEST_OPT="${PGR1_GL_GUEST_OPT:-1}"
+cpu_info() {
+    python3 "$ROOT/portable/tools/cpu_info.py" --profile "$CPU_PROFILE" --guest-opt "$GUEST_OPT" "$@"
+}
 region() {
     [[ -f assets/default.xbe ]] || { echo 'Missing assets/default.xbe' >&2; return 2; }
     case "$(sha1sum assets/default.xbe | cut -d' ' -f1)" in
@@ -34,11 +39,26 @@ build() {
     echo "$digest" > .local/generated-xbe.sha1
     local compiler=()
     [[ -f "$BUILD/CMakeCache.txt" ]] || compiler=(-DCMAKE_C_COMPILER="${CC:-clang}" -DCMAKE_CXX_COMPILER="${CXX:-clang++}")
-    cmake -S portable/linux/gldirect -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DPGR1_RELEASE="$release" "${compiler[@]}"
+    local signature
+    signature="$(cpu_info --signature)" || return 2
+    cmake -S portable/linux/gldirect -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DPGR1_RELEASE="$release" \
+        -DPGR1_VK_CPU_PROFILE="$CPU_PROFILE" -DPGR1_VK_GUEST_OPT="$GUEST_OPT" -DPGR1_VK_CPU_SIGNATURE="$signature" "${compiler[@]}"
     cmake --build "$BUILD" --parallel "${JOBS:-4}" --target "${1:-game}"
+    if [[ "${1:-game}" = game ]]; then
+        printf '%s\n' "$signature" > "$BUILD/game-cpu.signature"
+        printf '%s\n' "$digest" > "$BUILD/game-xbe.sha1"
+    fi
 }
 run() {
-    [[ -x "$BUILD/game" ]] || build
+    local signature digest
+    signature="$(cpu_info --signature)" || return 2
+    digest="$(sha1sum assets/default.xbe | cut -d' ' -f1)"
+    if [[ ! -x "$BUILD/game" || ! -f "$BUILD/game-cpu.signature" || ! -f "$BUILD/game-xbe.sha1" ]] ||
+        [[ "$(cat "$BUILD/game-cpu.signature")" != "$signature" || "$(cat "$BUILD/game-xbe.sha1")" != "$digest" ]]; then
+        build
+    else
+        cmake --build "$BUILD" --parallel "${JOBS:-4}" --target game
+    fi
     mkdir -p "$RUN/logs"
     RUN="$(realpath "$RUN")"
     (
@@ -47,6 +67,7 @@ run() {
         echo "Backend: OpenGL (SDK HLSL -> SPIR-V -> GLSL)"
         [[ -z "${PGR1_COMPARE_FRAME:-}" ]] || echo "Diagnostic CPU comparison: frame $PGR1_COMPARE_FRAME"
         echo "Run directory: $RUN"
+        cpu_info
         FPS="${PGR1_FPS:-60}" "$BUILD/game" "$ROOT/assets"
     ) 9>"$RUN/run.lock" 2>&1 | tee "$RUN/console.log"
 }
@@ -103,6 +124,9 @@ PGR1 native Linux (experimental, acceptance incomplete)
   bash scripts/portable-linux.sh test
 Options: JOBS=4, PGR1_RUN_DIR=..., PGR1_RUN_SECONDS=180, SCRIPT=..., PGR1_VSYNC=0|1,
          PGR1_CAPTURE=local.ppm. Benchmark defaults to SCRIPT-only input; PGR1_SCRIPT_ONLY=0 enables live input.
+Options: PGR1_GL_CPU_PROFILE=generic|native, PGR1_GL_GUEST_OPT=1|2|3,
+         PGR1_GL_REAL_VISIBILITY=1 (experimental real queries, unscaled targets),
+         PGR1_GL_SYNC_PROFILE=1, PGR1_VK_TEXTURE_CACHE_ENTRIES=1024 (shared capture cache).
 Unset SCRIPT for manual play. F11 toggles fullscreen.
 HELP
     ;;

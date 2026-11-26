@@ -67,6 +67,19 @@ int main() {
         auto blue=Quad({0,0,1,1},.8); blue.pipeline=red.pipeline;
         auto green=Quad({0,1,0,1},.2); green.pipeline=red.pipeline; green.pipeline.scissors={{0,0,8,8}};
         assert(r.Execute(Frame({Clear(),red,blue,green}))); assert(r.Present(32,32)); pixel(16,16,{255,0,0,255}); pixel(2,2,{0,255,0,255});
+        // EN: Real counts survive separate submissions, including empty report markers.
+        // PT-BR: Contagens reais sobrevivem a submissões separadas e reports vazios.
+        auto vis=red, hidden=blue, partial=green;
+        vis.visibility=std::make_shared<std::promise<uint64_t>>();
+        hidden.visibility=std::make_shared<std::promise<uint64_t>>();
+        partial.visibility=std::make_shared<std::promise<uint64_t>>();
+        auto vis_result=vis.visibility->get_future(), hidden_result=hidden.visibility->get_future(), partial_result=partial.visibility->get_future();
+        auto query_frame=Frame({Clear(),vis,hidden,partial});query_frame.present=false;
+        assert(r.Execute(query_frame));
+        Submission report;report.present=false;report.completion=std::make_shared<std::promise<void>>();
+        auto report_done=report.completion->get_future();
+        assert(r.Execute(report)); report_done.get();
+        assert(vis_result.get()==1024 && hidden_result.get()==0 && partial_result.get()==64);
         // Stencil is written with color disabled, then consumed by a second draw.
         auto mask=Quad({0,0,0,1}); mask.pipeline.color_mask=0; mask.pipeline.stencil=true;
         mask.pipeline.stencil_ref=3; mask.pipeline.stencil_pass=GL_REPLACE; mask.pipeline.scissors={{0,0,8,8}};

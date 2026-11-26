@@ -76,6 +76,9 @@ reduz trabalho anterior aos reports e permite espera direta de fences em A/B.
 [Cache persistente e análise de Londres (04D.22C)](40-persistent-shader-pipeline-cache.md):
 SPIR-V compartilhado, pipelines por dispositivo e diagnóstico de engasgos.
 
+[Comparação de APIs e visibilidade OpenGL (04D.22D)](41-cross-api-benchmark.md):
+GL real opt-in, telemetria de apresentação e comparação com Zink/Proton.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.

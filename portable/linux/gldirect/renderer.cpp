@@ -27,6 +27,8 @@ namespace pgr::gldirect {
  X(PFNGLGENQUERIESPROC, GenQueries) X(PFNGLQUERYCOUNTERPROC, QueryCounter) \
  X(PFNGLGETQUERYOBJECTIVPROC, GetQueryObjectiv) X(PFNGLGETQUERYOBJECTUI64VPROC, GetQueryObjectui64v) \
  X(PFNGLDELETEQUERIESPROC, DeleteQueries) X(PFNGLREADPIXELSPROC, ReadPixels) \
+ X(PFNGLBEGINQUERYPROC, BeginQuery) X(PFNGLENDQUERYPROC, EndQuery) X(PFNGLGETQUERYIVPROC, GetQueryiv) \
+ X(PFNGLFINISHPROC, Finish) \
  X(PFNGLGETATTRIBLOCATIONPROC, GetAttribLocation) X(PFNGLGETUNIFORMBLOCKINDEXPROC, GetUniformBlockIndex) \
  X(PFNGLUNIFORMBLOCKBINDINGPROC, UniformBlockBinding) X(PFNGLBINDBUFFERBASEPROC, BindBufferBase) \
  X(PFNGLGETERRORPROC, GetError) X(PFNGLGETINTEGERVPROC, GetIntegerv) \
@@ -140,6 +142,29 @@ struct Renderer::Impl {
     std::map<std::pair<unsigned,unsigned>,GLuint> fbos;
     struct Query { GLuint ids[2]; uint64_t frame; };
     std::deque<Query> queries;
+    struct Visibility { GLuint id; std::shared_ptr<std::promise<uint64_t>> result; };
+    std::deque<Visibility> visibility_pending;
+    GLint visibility_bits=0;
+    // EN: Resolve ready results without blocking; a report marker explicitly
+    // drains the ordered prefix. Bound pending queries independently of reports.
+    // PT-BR: Resolva resultados prontos sem bloquear; o marcador de report
+    // drena o prefixo ordenado. Limite queries pendentes independentemente dos reports.
+    bool ResolveVisibility(bool wait,bool one=false) {
+        while(!visibility_pending.empty()) {
+            auto& q=visibility_pending.front();
+            if(!wait) {
+                GLint available=0;GetQueryObjectiv(q.id,GL_QUERY_RESULT_AVAILABLE,&available);
+                if(!Error("visibility availability"))return false;
+                if(!available)break;
+            }
+            GLuint64 value=0;GetQueryObjectui64v(q.id,GL_QUERY_RESULT,&value);
+            if(!Error("visibility result"))return false;
+            q.result->set_value(uint64_t(value));
+            DeleteQueries(1,&q.id);visibility_pending.pop_front();
+            if(one)break;
+        }
+        return true;
+    }
     Image displayed; GLuint display_fbo=0; bool has_display=false;
     unsigned front=0; float output_aspect=0;
     unsigned output_w=0,output_h=0,guest_w=640,guest_h=480;
@@ -462,6 +487,8 @@ Renderer::~Renderer() {
     g.DeleteBuffers(2,g.uniforms); g.DeleteFramebuffers(1,&g.cube_fbo);
     g.DeleteTextures(1,&g.displayed.object); g.DeleteFramebuffers(1,&g.display_fbo);
     for(auto q:g.queries) g.DeleteQueries(2,q.ids);
+    // EN/PT-BR: Dropped promises cancel pending readers / promessas descartadas cancelam leitores.
+    for(auto& q:g.visibility_pending)g.DeleteQueries(1,&q.id);
     for(auto [key,f]:g.fbos) g.DeleteFramebuffers(1,&f);
     for(auto [key,t]:g.colors) g.DeleteTextures(1,&t.object);
     for(auto [key,d]:g.depths) g.DeleteRenderbuffers(1,&d.object);
@@ -473,6 +500,7 @@ bool Renderer::Init() {
 #define LOAD(type,name) g.name=reinterpret_cast<type>(g.load("gl" #name)); if(!g.name) { std::fprintf(stderr,"gldirect: missing gl%s\n",#name); return false; }
     GL_FUNCTIONS(LOAD)
 #undef LOAD
+    g.GetQueryiv(GL_SAMPLES_PASSED,GL_QUERY_COUNTER_BITS,&g.visibility_bits);
     const char* vs=R"(#version 330 core
 layout(location=0) in vec4 position;
 layout(location=1) in vec4 color;
@@ -645,11 +673,30 @@ bool Renderer::Execute(const Submission& frame) {
             }
             g.Toggle(GL_SCISSOR_TEST,true);
             auto draw=[&] { if(c.indices.empty()) g.DrawArrays(c.topology,offset.vertex,c.vertices.size()); else g.DrawElementsBaseVertex(c.topology,c.indices.size(),GL_UNSIGNED_INT,reinterpret_cast<void*>(offset.index),offset.vertex); };
+            GLuint counted=0;
+            if(c.visibility) {
+                // EN: Compare exact single-sample guest pixels only. Scaled
+                // targets need a separately validated guest-count contract.
+                // PT-BR: Compare pixels guest sem escala e com uma amostra.
+                // Alvos escalados exigem contrato de contagem validado à parte.
+                if(g.visibility_bits<32 || target.w!=target.gw || target.h!=target.gh) {
+                    std::fputs("gldirect: real visibility requires unscaled targets and >=32 query bits / visibilidade real exige alvos sem escala e >=32 bits\n",stderr);
+                    return false;
+                }
+                if(g.visibility_pending.size()>=4096 && !g.ResolveVisibility(true,true))return false;
+                g.GenQueries(1,&counted); if(!counted)return false;
+                g.BeginQuery(GL_SAMPLES_PASSED,counted);
+            }
             if(p.scissors.empty()) { g.Clip(g.ScaledRect(p.viewport,target,p.clip_scale,p.clip_pivot),target.h); draw(); }
             else for(auto r:p.scissors) {
                 int x=std::max(r.x,p.viewport.x),y=std::max(r.y,p.viewport.y);
                 int right=std::min(r.x+r.w,p.viewport.x+p.viewport.w),bottom=std::min(r.y+r.h,p.viewport.y+p.viewport.h);
                 g.Clip(g.ScaledRect({x,y,std::max(0,right-x),std::max(0,bottom-y)},target,p.clip_scale,p.clip_pivot),target.h); draw();
+            }
+            if(counted) {
+                g.EndQuery(GL_SAMPLES_PASSED);
+                g.visibility_pending.push_back({counted,c.visibility});
+                if(!g.Error("counted draw"))return false;
             }
             g.last_pipeline=p;g.state_valid=true;
         }
@@ -657,7 +704,15 @@ bool Renderer::Execute(const Submission& frame) {
         if(g.debug && !g.Error("guest command")) return false;
     }
     if(frame.present) { g.front=frame.front; if(!g.Snapshot(frame.front)) return false; }
-    return g.Error("guest batch");
+    if(!g.Error("guest batch"))return false;
+    if(frame.completion) {
+        // EN: This marker must include even uncounted/empty prefixes.
+        // PT-BR: O marcador inclui prefixos sem contagem ou vazios.
+        g.Finish();
+        if(!g.Error("report fence") || !g.ResolveVisibility(true))return false;
+        frame.completion->set_value();
+    } else if(!g.ResolveVisibility(false))return false;
+    return true;
 }
 void Renderer::SetAspect(float aspect) { impl->output_aspect=aspect; }
 void Renderer::SetOutputSize(unsigned width,unsigned height,unsigned guest_width,unsigned guest_height) {

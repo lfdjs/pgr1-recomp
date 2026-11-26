@@ -68,6 +68,11 @@ Rect Rectangle(const uint32_t* r) { return {int(r[0]),int(r[1]),int(r[2])-int(r[
 class GLBackend final : public Backend {
     Submission frame_;
     bool sync_profile_=false;
+#ifndef PGR1_NATIVE_VULKAN
+    bool gl_real_visibility_=false;
+#endif
+    std::vector<std::shared_future<uint64_t>> counted_;
+    uint64_t resolved_visibility_count_=0;
     struct WaitTimer {
         bool enabled;
         double& milliseconds;
@@ -91,8 +96,6 @@ class GLBackend final : public Backend {
     // PT-BR: Cada recurso precisa de apenas uma referência ao token do prefixo.
     std::unordered_map<uint32_t,ResourceUse> resource_use_;
     uint64_t resource_generation_=1;
-    std::vector<std::shared_future<uint64_t>> counted_;
-    uint64_t resolved_visibility_count_=0;
     uint32_t next_fence_=0;
     std::shared_future<void> Completion() {
         if(!frame_.completion) {
@@ -329,6 +332,13 @@ public:
         g_raw_vertices=false;
         const char* sync_profile=std::getenv("PGR1_VK_SYNC_PROFILE");
         sync_profile_=sync_profile && std::strcmp(sync_profile,"1")==0;
+#ifndef PGR1_NATIVE_VULKAN
+        const char* gl_profile=std::getenv("PGR1_GL_SYNC_PROFILE");
+        sync_profile_=gl_profile && std::strcmp(gl_profile,"1")==0;
+        const char* real=std::getenv("PGR1_GL_REAL_VISIBILITY");
+        gl_real_visibility_=real && std::strcmp(real,"1")==0;
+        LOGR("gldirect: visibility / visibilidade = %s",gl_real_visibility_?"real GL samples (experimental)":"legacy zero (not parity / sem paridade)");
+#endif
 #ifdef PGR1_NATIVE_VULKAN
         const char* overlap=std::getenv("PGR1_VK_TEXTURE_OVERLAP");
         // EN: Deliberately incorrect ceiling experiment, never a coherency mode.
@@ -829,13 +839,15 @@ public:
         } else
 #endif
             c.indices=a.indices;
-#ifdef PGR1_NATIVE_VULKAN
         std::shared_future<uint64_t> visibility;
-        if(s.simple[kMCountEnable/4]) {
+        if(s.simple[kMCountEnable/4]
+#ifndef PGR1_NATIVE_VULKAN
+           && gl_real_visibility_
+#endif
+        ) {
             c.visibility=std::make_shared<std::promise<uint64_t>>();
             visibility=c.visibility->get_future().share();
         }
-#endif
         frame_.geometry_vertices+=c.vertices.size();
         frame_.geometry_indices+=c.indices.size();
         frame_.geometry_bytes+=c.vertices.size()*sizeof(Vertex)+c.indices.size()*sizeof(uint32_t);
@@ -845,8 +857,8 @@ public:
         timer.supported=true;
 #ifdef PGR1_NATIVE_VULKAN
         UseDraw(s);
-        if(visibility.valid()) counted_.push_back(std::move(visibility));
 #endif
+        if(visibility.valid()) counted_.push_back(std::move(visibility));
     }
     void Present(const Surface& front) override {
         TextureDesc d; if(!DescribeSurface(front,d)) { Unsupported("present surface"); return; }
@@ -991,18 +1003,32 @@ public:
         WaitTimer timer(sync_profile_,frame_.sync.resource_wait_ms);
         WaitCompletion(found->second.completion); resource_use_.erase(found);
     }
+#endif
     void ClearReport() override {
         if(sync_profile_) ++frame_.sync.visibility_clears;
         counted_.clear(); resolved_visibility_count_=0;
     }
-#endif
     void GetReport(uint32_t r) override {
-#ifdef PGR1_NATIVE_VULKAN
+#ifndef PGR1_NATIVE_VULKAN
+        // EN: Keep the historical diagnostic only when explicitly comparing
+        // the old implementation. Real visibility uses an ordered GL marker.
+        // PT-BR: Preserve o diagnóstico histórico só ao comparar a versão
+        // antiga. Visibilidade real usa um marcador GL ordenado.
+        if(!gl_real_visibility_) {
+            kernel::W32(r,uint32_t(frames_)); kernel::W32(r+4,0); kernel::W32(r+8,0); kernel::W32(r+12,0);
+            return;
+        }
+#endif
         // A report is an ordered GPU operation, even with no counted draws.
         // Preserve the SDK's 16-byte time/count/status layout. Unsupported or
         // cancelled work leaves its pending status intact, never a fake result.
         if(sync_profile_) ++frame_.sync.visibility_reports;
+#ifdef PGR1_NATIVE_VULKAN
         const auto completed=Completion();
+#else
+        frame_.completion=std::make_shared<std::promise<void>>();
+        const auto completed=frame_.completion->get_future();
+#endif
         FlushFor(SubmissionReason::VisibilityReport);
         uint64_t count=resolved_visibility_count_;
         constexpr uint64_t limit=UINT32_MAX;
@@ -1022,9 +1048,6 @@ public:
         kernel::W32(r,uint32_t(frames_)); kernel::W32(r+4,0); kernel::W32(r+8,uint32_t(count));
         std::atomic_thread_fence(std::memory_order_release);
         kernel::W32(r+12,0);
-#else
-        kernel::W32(r,uint32_t(frames_)); kernel::W32(r+4,0); kernel::W32(r+8,0); kernel::W32(r+12,0);
-#endif
     }
 };
 }

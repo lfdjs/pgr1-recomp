@@ -47,6 +47,9 @@ else()
     add_library(pgr1_sdl INTERFACE)
     target_link_libraries(pgr1_sdl INTERFACE SDL3::SDL3)
 endif()
+# EN/PT-BR: Same CPU profiles as native Vulkan / mesmos perfis de CPU do Vulkan.
+set(PGR1_VK_CPU_PROFILE "generic" CACHE STRING "Shared CPU profile for OpenGL")
+include("${CMAKE_CURRENT_LIST_DIR}/../vulkan/cpu_build_profile.cmake")
 file(GLOB runtime_sources CONFIGURE_DEPENDS "${PGR1_SDK_SOURCE_DIR}/runtime/*/*.cpp")
 # Match the original headless harness substitutions, without modifying its build script.
 list(FILTER runtime_sources EXCLUDE REGEX "/runtime/app/|/core/input.cpp$|/core/wheel.cpp$|/gpu/d3d12.cpp$|/gpu/d3d11.cpp$|/gpu/d3d_common.cpp$|/audio/xaudio2.cpp$")
@@ -56,7 +59,7 @@ file(GLOB game_sources CONFIGURE_DEPENDS "${PGR1_ROOT}/src/common/*.cpp" "${PGR1
 file(GLOB generated_sources CONFIGURE_DEPENDS "${PGR1_GENERATED_DIR}/x86_recomp.*.cpp" "${PGR1_GENERATED_DIR}/x86_func_mapping.cpp")
 add_library(pgr1_generated OBJECT ${generated_sources})
 target_include_directories(pgr1_generated PRIVATE "${PGR1_SDK_SOURCE_DIR}/runtime" "${PGR1_GENERATED_DIR}")
-target_compile_options(pgr1_generated PRIVATE -O1 -g0 -w -fno-strict-aliasing -march=x86-64-v2)
+target_compile_options(pgr1_generated PRIVATE "-O${PGR1_VK_GUEST_OPT}" -g0 -w -fno-strict-aliasing ${PGR1_CPU_FLAGS})
 set(native_harness_sources ${harness_sources})
 list(FILTER native_harness_sources EXCLUDE REGEX "/app_headless.cpp$")
 add_executable(game app_linux.cpp main.cpp backend.cpp commands.cpp renderer.cpp shader_compiler.cpp draw_constants.cpp sdl_audio.cpp
@@ -64,8 +67,12 @@ add_executable(game app_linux.cpp main.cpp backend.cpp commands.cpp renderer.cpp
 target_include_directories(game PRIVATE "${PGR1_ROOT}/src" "${PGR1_SDK_SOURCE_DIR}/runtime"
     "${PGR1_SDK_SOURCE_DIR}/harness" "${PGR1_SDK_SOURCE_DIR}/harness/compat" "${PGR1_GENERATED_DIR}")
 target_compile_definitions(game PRIVATE PGR1_RELEASE=${PGR1_RELEASE} XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=0 PGR1_ENABLE_REFERENCE_COMPARE=1)
-target_compile_options(game PRIVATE -fno-strict-aliasing -march=x86-64-v2)
+target_compile_options(game PRIVATE -fno-strict-aliasing ${PGR1_CPU_FLAGS})
 target_link_libraries(game PRIVATE Threads::Threads pgr1_sdl)
+if(PGR1_CPU_LOCAL)
+    target_compile_definitions(pgr1_generated PRIVATE "PGR1_CPU_BUILD_SIGNATURE=${PGR1_VK_CPU_SIGNATURE}")
+    target_compile_definitions(game PRIVATE "PGR1_CPU_BUILD_SIGNATURE=${PGR1_VK_CPU_SIGNATURE}")
+endif()
 
 target_compile_definitions(game PRIVATE "PGR1_GLSLANG_EXECUTABLE=\"${PGR1_GLSLANG_EXECUTABLE}\""
     "PGR1_SPIRV_CROSS_EXECUTABLE=\"${PGR1_SPIRV_CROSS_EXECUTABLE}\"")
@@ -77,5 +84,5 @@ add_executable(reference_benchmark EXCLUDE_FROM_ALL
 target_include_directories(reference_benchmark PRIVATE "${PGR1_ROOT}/src" "${PGR1_SDK_SOURCE_DIR}/runtime"
     "${PGR1_SDK_SOURCE_DIR}/harness" "${PGR1_SDK_SOURCE_DIR}/harness/compat" "${PGR1_GENERATED_DIR}")
 target_compile_definitions(reference_benchmark PRIVATE PGR1_RELEASE=${PGR1_RELEASE} XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=0)
-target_compile_options(reference_benchmark PRIVATE -fno-strict-aliasing -march=x86-64-v2)
+target_compile_options(reference_benchmark PRIVATE -fno-strict-aliasing ${PGR1_CPU_FLAGS})
 target_link_libraries(reference_benchmark PRIVATE Threads::Threads)

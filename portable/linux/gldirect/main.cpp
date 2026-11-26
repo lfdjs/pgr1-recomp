@@ -212,9 +212,11 @@ int main(int argc, char** argv) {
     pgr::gldirect::Submission frame{}, pending{};
     double pending_execute_ms=0;
     std::ofstream timings("frames.csv"), gpu_times("gpu.csv");
-    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,present_ms,supported_draws,rejected_draws\n";
+    timings<<"frame,frame_ms,cpu_ms,capture_ms,max_draw_ms,decode_ms,texture_check_ms,assemble_ms,queue_wait_ms,execute_ms,present_ms,supported_draws,rejected_draws,presented,presented_frame_ms,guest_vblank,texture_static_binds,texture_memcmp_checks,texture_memcmp_bytes,texture_same_draw_reuses,texture_decodes,texture_mip_levels_decoded,texture_mip_levels_reused,texture_cache_evictions,texture_cache_misses,texture_descriptor_redecodes,texture_guest_redecodes,geometry_vertices,geometry_indices,geometry_bytes,texture_cache_entries_peak,visibility_reports,visibility_report_wait_ms\n";
     gpu_times<<"frame,gpu_ms\n";
     const auto started=std::chrono::steady_clock::now(); auto last_frame=started;
+    std::chrono::steady_clock::time_point last_success{};
+    bool have_success=false;
     std::clock_t last_cpu=std::clock();
     const double seconds=std::getenv("PGR1_RUN_SECONDS") ? std::atof(std::getenv("PGR1_RUN_SECONDS")) : 0;
     auto ms=[](auto duration) { return std::chrono::duration<double,std::milli>(duration).count(); };
@@ -258,11 +260,45 @@ int main(int argc, char** argv) {
             pending.texture_check_ns+=next.texture_check_ns; pending.assemble_ns+=next.assemble_ns;
             pending.max_draw_ns=std::max(pending.max_draw_ns,next.max_draw_ns);
             pending.queue_wait_ns+=next.queue_wait_ns; pending.supported+=next.supported; pending.rejected_draws+=next.rejected_draws;
+            pending.texture_static_binds+=next.texture_static_binds;
+            pending.texture_memcmp_checks+=next.texture_memcmp_checks;
+            pending.texture_memcmp_bytes+=next.texture_memcmp_bytes;
+            pending.texture_same_draw_reuses+=next.texture_same_draw_reuses;
+            pending.texture_decodes+=next.texture_decodes;
+            pending.texture_mip_levels_decoded+=next.texture_mip_levels_decoded;
+            pending.texture_mip_levels_reused+=next.texture_mip_levels_reused;
+            pending.texture_cache_evictions+=next.texture_cache_evictions;
+            pending.texture_cache_misses+=next.texture_cache_misses;
+            pending.texture_descriptor_redecodes+=next.texture_descriptor_redecodes;
+            pending.texture_guest_redecodes+=next.texture_guest_redecodes;
+            pending.geometry_vertices+=next.geometry_vertices;
+            pending.geometry_indices+=next.geometry_indices;
+            pending.geometry_bytes+=next.geometry_bytes;
+            pending.texture_cache_entries_peak=std::max(pending.texture_cache_entries_peak,next.texture_cache_entries_peak);
+            pending.sync.visibility_reports+=next.sync.visibility_reports;
+            pending.sync.visibility_report_wait_ms+=next.sync.visibility_report_wait_ms;
             if(presented) {
                 frame=std::move(next); frame.commands.clear();
                 frame.draw_ns=pending.draw_ns; frame.decode_ns=pending.decode_ns; frame.max_draw_ns=pending.max_draw_ns;
                 frame.texture_check_ns=pending.texture_check_ns; frame.assemble_ns=pending.assemble_ns;
                 frame.queue_wait_ns=pending.queue_wait_ns; frame.supported=pending.supported; frame.rejected_draws=pending.rejected_draws;
+                frame.texture_static_binds=pending.texture_static_binds;
+               frame.texture_memcmp_checks=pending.texture_memcmp_checks;
+               frame.texture_memcmp_bytes=pending.texture_memcmp_bytes;
+               frame.texture_same_draw_reuses=pending.texture_same_draw_reuses;
+               frame.texture_decodes=pending.texture_decodes;
+               frame.texture_mip_levels_decoded=pending.texture_mip_levels_decoded;
+               frame.texture_mip_levels_reused=pending.texture_mip_levels_reused;
+               frame.texture_cache_evictions=pending.texture_cache_evictions;
+               frame.texture_cache_misses=pending.texture_cache_misses;
+               frame.texture_descriptor_redecodes=pending.texture_descriptor_redecodes;
+               frame.texture_guest_redecodes=pending.texture_guest_redecodes;
+               frame.geometry_vertices=pending.geometry_vertices;
+               frame.geometry_indices=pending.geometry_indices;
+               frame.geometry_bytes=pending.geometry_bytes;
+                frame.texture_cache_entries_peak=pending.texture_cache_entries_peak;
+                frame.sync.visibility_reports=pending.sync.visibility_reports;
+                frame.sync.visibility_report_wait_ms=pending.sync.visibility_report_wait_ms;
                 execute_ms=pending_execute_ms; pending={}; pending_execute_ms=0;
             }
         }
@@ -275,8 +311,17 @@ int main(int argc, char** argv) {
             boot_failed=true;
             break;
         }
+        // EN: Timestamp successful swaps, not the beginning of CPU execution.
+        // PT-BR: Cronometre swaps bem-sucedidos, não o início da execução CPU.
+        const auto after_swap=std::chrono::steady_clock::now();
+        if(presented) {
+            const double interval=have_success?ms(after_swap-last_success):0;
+            last_success=after_swap;have_success=true;
+            timings<<frame.frame<<','<<frame_ms<<','<<cpu_ms<<','<<frame.draw_ns/1e6<<','<<frame.max_draw_ns/1e6<<','<<frame.decode_ns/1e6<<','<<frame.texture_check_ns/1e6<<','<<frame.assemble_ns/1e6<<','<<frame.queue_wait_ns/1e6<<','<<execute_ms<<','<<ms(after_swap-before_present)<<','<<frame.supported<<','<<frame.rejected_draws<<",1,"<<interval<<','<<frame.guest_vblank
+                <<','<<frame.texture_static_binds<<','<<frame.texture_memcmp_checks<<','<<frame.texture_memcmp_bytes<<','<<frame.texture_same_draw_reuses<<','<<frame.texture_decodes<<','<<frame.texture_mip_levels_decoded<<','<<frame.texture_mip_levels_reused<<','<<frame.texture_cache_evictions<<','<<frame.texture_cache_misses<<','<<frame.texture_descriptor_redecodes<<','<<frame.texture_guest_redecodes<<','<<frame.geometry_vertices<<','<<frame.geometry_indices<<','<<frame.geometry_bytes
+                <<','<<frame.texture_cache_entries_peak<<','<<frame.sync.visibility_reports<<','<<frame.sync.visibility_report_wait_ms<<'\n';
+        }
         if(presented && !frame.reference_pixels.empty()) { renderer->Compare(frame); frame.reference_pixels.clear(); }
-        if(presented) timings<<frame.frame<<','<<frame_ms<<','<<cpu_ms<<','<<frame.draw_ns/1e6<<','<<frame.max_draw_ns/1e6<<','<<frame.decode_ns/1e6<<','<<frame.texture_check_ns/1e6<<','<<frame.assemble_ns/1e6<<','<<frame.queue_wait_ns/1e6<<','<<execute_ms<<','<<ms(std::chrono::steady_clock::now()-before_present)<<','<<frame.supported<<','<<frame.rejected_draws<<'\n';
         for(auto sample:renderer->PollGpu()) gpu_times<<sample.frame<<','<<sample.nanoseconds/1e6<<'\n';
         if (now >= next_title) {
             timings.flush(); gpu_times.flush(); logx::Flush();
@@ -296,7 +341,7 @@ int main(int argc, char** argv) {
         // Waiting for a guest frame must not consume another blocking VSync.
         // Swap only completed frames (or an expose), so a late submission does
         // not miss its refresh because an unchanged image was swapped first.
-        if(!took) SDL_Delay(1);
+        if(!took) pgr::gldirect::WaitForWork(std::chrono::milliseconds(1));
     }
     if(const char* capture=std::getenv("PGR1_CAPTURE"); capture && !renderer->Capture(capture)) std::fprintf(stderr,"gldirect: capture failed\n");
     timings.flush(); gpu_times.flush(); logx::Flush();
