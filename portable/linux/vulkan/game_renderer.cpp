@@ -25,6 +25,7 @@
 #include <set>
 #include <stdexcept>
 #include <utility>
+#include <unordered_map>
 
 namespace pgr::vulkan {
 using namespace gldirect;
@@ -117,6 +118,13 @@ struct Renderer::Impl {
     // PT-BR: Conclusão assíncrona evita bloquear o produtor a cada submissão.
     const bool async_completion=performance::AsynchronousGpuCompletion(
         std::getenv("PGR1_VK_PIPELINED"));
+    // EN: Explicit A/B controls until integrated hardware validation.
+    // PT-BR: Controles A/B explícitos até validação integrada em hardware.
+    const bool descriptor_reuse=[] { const char* e=std::getenv("PGR1_VK_DESCRIPTOR_REUSE"); return e && std::strcmp(e,"1")==0; }();
+    const bool direct_report_wait=[] { const char* e=std::getenv("PGR1_VK_REPORT_DIRECT_WAIT"); return e && std::strcmp(e,"1")==0; }();
+    VkDescriptorType UniformType() const {
+        return descriptor_reuse?VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    }
     bool applied_vsync=true;
     float output_aspect=0;
     unsigned screen_w=0,screen_h=0;
@@ -138,6 +146,7 @@ struct Renderer::Impl {
     VkPipelineCache pipeline_cache=VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool=VK_NULL_HANDLE;
     uint32_t descriptor_capacity=0; // 04D.2: reset instead of recreating each submission
+    std::unordered_map<std::string,VkDescriptorSet> descriptor_sets;
     VkQueryPool queries=VK_NULL_HANDLE;
     VkQueryPool occlusion_pool=VK_NULL_HANDLE;
     uint32_t occlusion_capacity=0;
@@ -330,6 +339,8 @@ struct Renderer::Impl {
         std::printf("Vulkan enabled queried features: fillModeNonSolid=%u samplerAnisotropy=%u shaderClipDistance=%u largePoints=%u; timestamps=%u\n",
             features.fillModeNonSolid,features.samplerAnisotropy,features.shaderClipDistance,features.largePoints,timestamp_bits);
         std::printf("Vulkan precise occlusion queries: %s\n",features.occlusionQueryPrecise?"enabled":"unavailable; counted draws explicitly fail");
+        std::printf("Vulkan descriptor reuse / reuso de descritores: %s; direct report wait / espera direta de report: %s\n",
+            descriptor_reuse?"on":"off",direct_report_wait?"on":"off");
         std::fprintf(stderr,"Vulkan 04C limitation: targets start cleared; CPU-written target contents are not imported. Partial retained-surface rendering after CPU edits needs 04D resource invalidation.\n");
         VkCommandPoolCreateInfo pc{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; pc.queueFamilyIndex=family; pc.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         Check(vkCreateCommandPool(device,&pc,nullptr,&pool),"command pool");
@@ -339,7 +350,7 @@ struct Renderer::Impl {
         if(surface) { VkSemaphoreCreateInfo sc{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}; Check(vkCreateSemaphore(device,&sc,nullptr,&acquired),"acquire semaphore"); }
         std::array<VkDescriptorSetLayoutBinding,10> bindings{};
         for(unsigned i=0;i<10;i++) { bindings[i].binding=i; bindings[i].descriptorCount=1; bindings[i].stageFlags=VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT;
-            bindings[i].descriptorType=i<2?VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:i<6?VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:VK_DESCRIPTOR_TYPE_SAMPLER; }
+            bindings[i].descriptorType=i<2?UniformType():i<6?VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:VK_DESCRIPTOR_TYPE_SAMPLER; }
         VkDescriptorSetLayoutCreateInfo ds{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; ds.bindingCount=bindings.size(); ds.pBindings=bindings.data();
         Check(vkCreateDescriptorSetLayout(device,&ds,nullptr,&descriptors),"descriptor layout");
         VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pl.setLayoutCount=1; pl.pSetLayouts=&descriptors;
@@ -748,27 +759,59 @@ struct Renderer::Impl {
         copy.srcOffsets[0]={a.x,a.y,0}; copy.srcOffsets[1]={a.x+a.w,a.y+a.h,1}; copy.dstOffsets[0]={b.x,b.y,0}; copy.dstOffsets[1]={b.x+b.w,b.y+b.h,1};
         vkCmdBlitImage(cmd,source->image,VK_IMAGE_LAYOUT_GENERAL,target->image,VK_IMAGE_LAYOUT_GENERAL,1,&copy,VK_FILTER_NEAREST); Barrier();
     }
+    // EN: A dynamic offset is uint32_t. For larger offsets use the aligned
+    //     static base itself and a zero dynamic offset, without truncation.
+    // PT-BR: Offset dinâmico é uint32_t. Acima do limite use a base estática
+    //        alinhada e offset dinâmico zero, sem truncamento.
+    VkDeviceSize UniformBase(VkDeviceSize offset) const {
+        return !descriptor_reuse || offset>UINT32_MAX?offset:0;
+    }
+    uint32_t UniformDynamic(VkDeviceSize offset) const {
+        return uint32_t(offset-UniformBase(offset));
+    }
     VkDescriptorSet Bindings(const Command& c,const Offset& offset) {
-        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; allocate.descriptorPool=descriptor_pool; allocate.descriptorSetCount=1; allocate.pSetLayouts=&descriptors;
-        VkDescriptorSet set=VK_NULL_HANDLE; Check(vkAllocateDescriptorSets(device,&allocate,&set),"allocate draw descriptors");
-        VkDescriptorBufferInfo uniform[2]={{staged->buffer,offset.vc,sizeof(c.vertex_constants)},{staged->buffer,offset.dc,c.draw_constants.size()}};
+        VkDescriptorBufferInfo uniform[2]={{staged->buffer,UniformBase(offset.vc),sizeof(c.vertex_constants)},
+            {staged->buffer,UniformBase(offset.dc),c.draw_constants.size()}};
         std::array<VkDescriptorImageInfo,8> images{};
         for(unsigned i=0;i<4;i++) {
             if(c.textures[i].render_target==c.target.color || (c.textures[i].cube && std::find(c.textures[i].face_targets.begin(),c.textures[i].face_targets.end(),c.target.color)!=c.textures[i].face_targets.end()))throw std::runtime_error("render target sampling feedback");
             auto image=TextureImage(c.textures[i]); retained.push_back(image);
             images[i].imageView=image->sample; images[i].imageLayout=VK_IMAGE_LAYOUT_GENERAL; images[i+4].sampler=Sampler(c.textures[i],image->levels);
         }
+        // EN: Resolve actual image views before lookup, including dynamic cube
+        //     copies. Descriptor reuse never skips GPU resource preparation.
+        //     Owned images are retained through the submission fence.
+        // PT-BR: Resolva views reais antes da consulta, inclusive cópias de
+        //        cubemaps. O reuso não omite a preparação de recursos GPU.
+        //        Imagens próprias permanecem vivas até a fence.
+        std::string key;
+        if(descriptor_reuse) {
+            key.reserve(128);
+            for(const auto& u:uniform) { Key(key,u.buffer); Key(key,u.offset); Key(key,u.range); }
+            for(const auto& image:images) { Key(key,image.imageView); Key(key,image.sampler); Key(key,image.imageLayout); }
+            if(const auto found=descriptor_sets.find(key);found!=descriptor_sets.end()) {
+                ++stats.descriptor_set_hits; return found->second;
+            }
+        }
+        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocate.descriptorPool=descriptor_pool; allocate.descriptorSetCount=1; allocate.pSetLayouts=&descriptors;
+        VkDescriptorSet set=VK_NULL_HANDLE; Check(vkAllocateDescriptorSets(device,&allocate,&set),"allocate draw descriptors");
+        ++stats.descriptor_set_allocations;
         std::array<VkWriteDescriptorSet,10> write{};
         for(unsigned i=0;i<10;i++) { write[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; write[i].dstSet=set; write[i].dstBinding=i; write[i].descriptorCount=1;
-            write[i].descriptorType=i<2?VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:i<6?VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:VK_DESCRIPTOR_TYPE_SAMPLER;
+            write[i].descriptorType=i<2?UniformType():i<6?VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:VK_DESCRIPTOR_TYPE_SAMPLER;
             if(i<2)write[i].pBufferInfo=&uniform[i]; else write[i].pImageInfo=&images[i-2]; }
-        vkUpdateDescriptorSets(device,write.size(),write.data(),0,nullptr); return set;
+        vkUpdateDescriptorSets(device,write.size(),write.data(),0,nullptr);
+        if(descriptor_reuse)descriptor_sets.emplace(std::move(key),set);
+        return set;
     }
     void Stage(const Submission& frame) {
         // 04D.2: two-pass offset planning, then ONE copy of vertex/index/constant
         // data directly into persistently mapped HOST_COHERENT memory. The next
         // submission cannot overwrite this buffer before Wait() observes its
         // GPU fence (Render calls Wait/ReleaseFrame before Stage).
+        // EN/PT-BR: Retired pool only / somente após aposentar a submissão.
+        descriptor_sets.clear();
         offsets.resize(frame.commands.size());
         VkDeviceSize required=0;
         const VkDeviceSize ualign=std::max<VkDeviceSize>(1,properties.limits.minUniformBufferOffsetAlignment);
@@ -817,7 +860,7 @@ struct Renderer::Impl {
             const uint32_t max_capacity=UINT32_MAX/4;
             const uint32_t grown=descriptor_capacity<=max_capacity/2?descriptor_capacity*2:max_capacity;
             descriptor_capacity=std::max(count,grown);
-            VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,descriptor_capacity*2},
+            VkDescriptorPoolSize sizes[]={{UniformType(),descriptor_capacity*2},
                 {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,descriptor_capacity*4},{VK_DESCRIPTOR_TYPE_SAMPLER,descriptor_capacity*4}};
             VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; ci.maxSets=descriptor_capacity; ci.poolSizeCount=3; ci.pPoolSizes=sizes;
             Check(vkCreateDescriptorPool(device,&ci,nullptr,&descriptor_pool),"draw descriptor pool");
@@ -1036,7 +1079,7 @@ struct Renderer::Impl {
         Check(vkResetCommandBuffer(cmd,0),"reset commands"); VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; Check(vkBeginCommandBuffer(cmd,&begin),"begin commands");
         if(queries){ vkCmdResetQueryPool(cmd,queries,0,2); vkCmdWriteTimestamp(cmd,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,queries,0); }
     }
-    void Submit(bool present,unsigned image_index,uint64_t frame) {
+    void Submit(bool present,unsigned image_index,uint64_t frame,bool blocking_report=false) {
         if(queries)vkCmdWriteTimestamp(cmd,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,queries,1);
         Check(vkEndCommandBuffer(cmd),"end commands"); Check(vkResetFences(device,1,&fence),"reset fence");
         VkPipelineStageFlags stage=VK_PIPELINE_STAGE_TRANSFER_BIT|VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; VkSubmitInfo info{VK_STRUCTURE_TYPE_SUBMIT_INFO}; info.commandBufferCount=1; info.pCommandBuffers=&cmd;
@@ -1056,7 +1099,12 @@ struct Renderer::Impl {
         // PT-BR: Um draw contado nao implica consumo imediato pelo jogo.
         // GetReport continua aguardando a promessa ordenada; sondagem ociosa
         // ou o proximo Render conclui os resultados apos a fence real.
-        if(!reads.empty() || (!counted.empty() && !async_completion))Wait();
+        // EN: The producer explicitly blocks on VisibilityReport prefixes.
+        //     Wait on the real fence here rather than adding an idle-poll round trip.
+        // PT-BR: O produtor bloqueia explicitamente nesses prefixos. Aguarde a
+        //        fence real aqui em vez de acrescentar uma rodada de sondagem ociosa.
+        if(blocking_report)++stats.visibility_direct_waits;
+        if(blocking_report || !reads.empty() || (!counted.empty() && !async_completion))Wait();
         else if(!counted.empty())++stats.visibility_deferred_submissions;
     }
     void RecordPresent(unsigned image_index) {
@@ -1219,7 +1267,9 @@ struct Renderer::Impl {
                     Channel(p.blend_color,0),Channel(p.blend_color,24)};
                 vkCmdSetBlendConstants(cmd,blend);
             } else ++stats.blend_set_skips;
-            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,&set,0,nullptr);
+            const uint32_t dynamic_offsets[]={UniformDynamic(offsets[i].vc),UniformDynamic(offsets[i].dc)};
+            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,&set,
+                descriptor_reuse?2u:0u,descriptor_reuse?dynamic_offsets:nullptr);
             vkCmdBindVertexBuffers(cmd,0,1,&staged->buffer,&offsets[i].vertex);
             if(!c.indices.empty())vkCmdBindIndexBuffer(cmd,staged->buffer,offsets[i].index,VK_INDEX_TYPE_UINT32);
             uint32_t query=uint32_t(counted.size());
@@ -1256,7 +1306,9 @@ struct Renderer::Impl {
             }
         }
         pending_completion=frame.completion;
-        Submit(present,image_index,frame.frame);
+        Submit(present,image_index,frame.frame,
+            direct_report_wait && !frame.present && frame.completion &&
+            frame.reason==SubmissionReason::VisibilityReport);
         // EN: GPU execution may overlap the next guest capture. Completion
         // promises are drained by the next Render(), idle PollCompletion(),
         // and Finish(). CPU readbacks still wait in Submit().

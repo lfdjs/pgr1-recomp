@@ -418,6 +418,24 @@ int main() {
     assert(renderer.LastStats().framebuffer_hits>=1);
     assert(renderer.LastStats().framebuffer_creates==0);
 
+    // EN: Same views/samplers, different owned uniform contents and offsets.
+    // PT-BR: Mesmas views/samplers, constantes próprias em offsets distintos.
+    auto left=red, right=red;
+    left.pipeline.scissors={{0,0,16,32}};
+    right.pipeline.scissors={{16,0,16,32}};
+    right.draw_constants=green.draw_constants;
+    for(auto& v:right.vertices) { v.color={0,1,0,1}; v.attributes[3]=v.color; }
+    pixels=Execute(renderer,{Clear(),left,right});
+    Pixel(pixels,8,16,0xffff0000); Pixel(pixels,24,16,0xff00ff00);
+    const char* reuse_env=std::getenv("PGR1_VK_DESCRIPTOR_REUSE");
+    if(reuse_env && std::strcmp(reuse_env,"1")==0) {
+        assert(renderer.LastStats().descriptor_set_allocations==1);
+        assert(renderer.LastStats().descriptor_set_hits==1);
+    } else {
+        assert(renderer.LastStats().descriptor_set_allocations==2);
+        assert(renderer.LastStats().descriptor_set_hits==0);
+    }
+
     // MSAA must alter actual diagonal coverage in the primary display target;
     // small reflection/auxiliary targets above remain single-sampled.
     const Target display{0x10000,0x20000,640,480};
@@ -597,6 +615,23 @@ int main() {
         }
         assert(result.wait_for(std::chrono::seconds(0))==std::future_status::ready);
         assert(result.get()==1024);completion.get();
+    }
+    // EN: Explicit report prefixes retain real counts in direct-wait mode.
+    // PT-BR: Prefixos de report preservam contagens reais na espera direta.
+    {
+        auto draw=red; draw.visibility=std::make_shared<std::promise<uint64_t>>();
+        auto result=draw.visibility->get_future();
+        Submission prefix; prefix.present=false; prefix.reason=SubmissionReason::VisibilityReport;
+        prefix.commands={Clear(),draw};
+        prefix.completion=std::make_shared<std::promise<void>>();
+        auto done=prefix.completion->get_future();
+        assert(renderer.Render(prefix));
+        const char* direct=std::getenv("PGR1_VK_REPORT_DIRECT_WAIT");
+        if(direct && std::strcmp(direct,"1")==0) {
+            assert(renderer.LastStats().visibility_direct_waits==1);
+            assert(done.wait_for(std::chrono::seconds(0))==std::future_status::ready);
+        }
+        renderer.Finish(); done.get(); assert(result.get()==1024);
     }
     // EN: Shutdown drains the final GPU prefix even when the caller retains
     // its promises and never explicitly calls Finish or PollCompletion.

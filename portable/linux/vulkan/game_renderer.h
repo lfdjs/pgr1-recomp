@@ -28,6 +28,7 @@ public:
         std::uint64_t readback_requests=0, readback_bytes=0, readback_buffer_creates=0,
             readback_buffer_reuses=0, submissions=0, nonpresent_submissions=0,
             pipeline_creates=0;
+        std::uint64_t descriptor_set_allocations=0, descriptor_set_hits=0, visibility_direct_waits=0;
         double readback_resolve_ms=0;
         bool presented=false;
         bool acquire_timeout=false;

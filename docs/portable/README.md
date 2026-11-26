@@ -70,6 +70,9 @@ pendentes; consulte evidências e limites no handoff.
 [Sincronização de recursos e readbacks (04D.22A)](38-resource-prefix-readback.md):
 redução de prefixos alheios, consultas cumulativas e cópia linear.
 
+[Visibilidade e descritores dinâmicos (04D.22B)](39-visibility-descriptor-reuse.md):
+reduz trabalho anterior aos reports e permite espera direta de fences em A/B.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.

@@ -18,7 +18,8 @@ COUNTS = (
     "visibility_query_pool_reuses", "visibility_deferred_submissions",
     "readback_requests", "readback_bytes", "readback_buffer_creates",
     "readback_buffer_reuses", "submissions", "nonpresent_submissions",
-    "render_passes", "pipeline_creates",
+    "render_passes", "pipeline_creates", "descriptor_set_allocations",
+    "descriptor_set_hits", "visibility_direct_waits",
 )
 TIMES = ("visibility_report_wait_ms", "readback_wait_ms", "resource_wait_ms",
          "fence_wait_ms", "readback_resolve_ms", "shader_ms")

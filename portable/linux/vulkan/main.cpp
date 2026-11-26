@@ -264,7 +264,7 @@ int main(int argc, char** argv) {
     std::ofstream sync_log, sync_submissions;
     auto sync_header=[&](std::ostream& out) {
         out<<"frame,guest_vblank,presented,reason,"<<pgr::gldirect::SyncProfile::Columns()
-           <<",visibility_queries,visibility_query_pool_creates,visibility_query_pool_reuses,visibility_deferred_submissions,readback_requests,readback_bytes,readback_buffer_creates,readback_buffer_reuses,readback_resolve_ms,submissions,nonpresent_submissions,render_passes,pipeline_creates,shader_ms\n";
+           <<",visibility_queries,visibility_query_pool_creates,visibility_query_pool_reuses,visibility_deferred_submissions,readback_requests,readback_bytes,readback_buffer_creates,readback_buffer_reuses,readback_resolve_ms,submissions,nonpresent_submissions,render_passes,pipeline_creates,shader_ms,descriptor_set_allocations,descriptor_set_hits,visibility_direct_waits\n";
     };
     auto sync_row=[&](std::ostream& out,const pgr::gldirect::Submission& frame,
                       const pgr::gldirect::SyncProfile& producer,const pgr::vulkan::Renderer::Stats& stats) {
@@ -275,7 +275,7 @@ int main(int argc, char** argv) {
            <<stats.visibility_query_pool_reuses<<','<<stats.visibility_deferred_submissions<<','
            <<stats.readback_requests<<','<<stats.readback_bytes<<','<<stats.readback_buffer_creates<<','
            <<stats.readback_buffer_reuses<<','<<stats.readback_resolve_ms<<','<<stats.submissions<<','
-           <<stats.nonpresent_submissions<<','<<stats.render_passes<<','<<stats.pipeline_creates<<','<<stats.shader_ms<<'\n';
+           <<stats.nonpresent_submissions<<','<<stats.render_passes<<','<<stats.pipeline_creates<<','<<stats.shader_ms<<','<<stats.descriptor_set_allocations<<','<<stats.descriptor_set_hits<<','<<stats.visibility_direct_waits<<'\n';
     };
     pgr::vulkan::Renderer::Stats sync_totals{};
     pgr::gldirect::SyncProfile sync_producer{};
@@ -291,6 +291,9 @@ int main(int argc, char** argv) {
         sync_totals.submissions+=stats.submissions; sync_totals.nonpresent_submissions+=stats.nonpresent_submissions;
         sync_totals.render_passes+=stats.render_passes; sync_totals.pipeline_creates+=stats.pipeline_creates;
         sync_totals.shader_ms+=stats.shader_ms;
+        sync_totals.descriptor_set_allocations+=stats.descriptor_set_allocations;
+        sync_totals.descriptor_set_hits+=stats.descriptor_set_hits;
+        sync_totals.visibility_direct_waits+=stats.visibility_direct_waits;
     };
     if(sync_profile) {
         sync_log.open("sync.csv"); sync_submissions.open("sync-submissions.csv");

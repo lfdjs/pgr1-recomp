@@ -226,6 +226,9 @@ if(BUILD_TESTING)
     add_test(NAME vk_sdk_offscreen_pixels_sync COMMAND pgr1_vk_renderer_test)
     set_tests_properties(vk_sdk_offscreen_pixels_sync PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90
       ENVIRONMENT "PGR1_VK_PIPELINED=0")
+    add_test(NAME vk_sdk_offscreen_pixels_descriptor_reuse COMMAND pgr1_vk_renderer_test)
+    set_tests_properties(vk_sdk_offscreen_pixels_descriptor_reuse PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90
+      ENVIRONMENT "PGR1_VK_PIPELINED=1;PGR1_VK_DESCRIPTOR_REUSE=1;PGR1_VK_REPORT_DIRECT_WAIT=1")
 
     add_executable(pgr1_vk_backend_test backend.cpp ../gldirect/commands.cpp ../gldirect/shader_compiler.cpp
       ../gldirect/draw_constants.cpp ../gldirect/tests/backend_test.cpp
