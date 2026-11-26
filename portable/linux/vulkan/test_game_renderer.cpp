@@ -420,12 +420,21 @@ int main() {
 
     // EN: Same views/samplers, different owned uniform contents and offsets.
     // PT-BR: Mesmas views/samplers, constantes próprias em offsets distintos.
-    auto left=red, right=red;
-    left.pipeline.scissors={{0,0,16,32}};
-    right.pipeline.scissors={{16,0,16,32}};
-    right.draw_constants=green.draw_constants;
-    for(auto& v:right.vertices) { v.color={0,1,0,1}; v.attributes[3]=v.color; }
-    pixels=Execute(renderer,{Clear(),left,right});
+    auto factor_state=State();
+    factor_state.tss[0][gpu::kTssColorOp]=factor_state.tss[0][gpu::kTssAlphaOp]=2;
+    factor_state.tss[0][gpu::kTssColorArg1]=factor_state.tss[0][gpu::kTssAlphaArg1]=3;
+    auto factor_shaders=Shaders(factor_state);
+    auto left_draw=Quad(factor_state,factor_shaders,{1,1,1,1});
+    auto right_draw=left_draw;
+    left_draw.pipeline.scissors={{0,0,16,32}};
+    right_draw.pipeline.scissors={{16,0,16,32}};
+    auto factor_constants=Constants(factor_state,size,size,false);
+    factor_constants.tfactor[0]=1; factor_constants.tfactor[1]=0;
+    factor_constants.tfactor[2]=0; factor_constants.tfactor[3]=1;
+    std::memcpy(left_draw.draw_constants.data(),&factor_constants,sizeof(factor_constants));
+    factor_constants.tfactor[0]=0; factor_constants.tfactor[1]=1;
+    std::memcpy(right_draw.draw_constants.data(),&factor_constants,sizeof(factor_constants));
+    pixels=Execute(renderer,{Clear(),left_draw,right_draw});
     Pixel(pixels,8,16,0xffff0000); Pixel(pixels,24,16,0xff00ff00);
     const char* reuse_env=std::getenv("PGR1_VK_DESCRIPTOR_REUSE");
     if(reuse_env && std::strcmp(reuse_env,"1")==0) {
