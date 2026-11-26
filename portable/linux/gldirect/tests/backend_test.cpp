@@ -213,6 +213,22 @@ int main() {
     f.commands.back().readback->set_value(std::move(pixels)); rows.join();
     assert(kernel::R32(s.rt.data)==0xff123456);
     assert(kernel::R32(s.rt.data+31*128)==0xff654321);
+    // EN: Linear readback must preserve padded guest rows.
+    // PT-BR: Readback linear deve preservar padding das linhas guest.
+    kernel::W32(0x1010,31u|(31u<<12)|(2u<<24));
+    constexpr uint32_t padded_pitch=192;
+    std::memset(kernel::HostPtr(s.rt.data),0xa5,padded_pitch*32);
+    backend->Clear(s,0,nullptr,0xf0,0xff102030,1,0);
+    std::thread padded([&] { backend->Sync(s.rt.data+4,4); });
+    while(!Take(f))std::this_thread::yield();
+    auto padded_pixels=std::vector<uint32_t>(1024,0xff112233);
+    padded_pixels[32]=0xff456789;
+    f.commands.back().readback->set_value(std::move(padded_pixels)); padded.join();
+    assert(kernel::R32(s.rt.data)==0xff112233);
+    assert(kernel::R32(s.rt.data+padded_pitch)==0xff456789);
+    assert(kernel::R32(s.rt.data+128)==0xa5a5a5a5);
+    assert(kernel::R32(s.rt.data+31*padded_pitch+188)==0xa5a5a5a5);
+    header(0x1000,0x10000,0x12);
 #endif
     backend->SyncLate(s.rt.data); backend->Flush(); assert(Take(f));
     f.commands.back().readback->set_value(std::vector<uint32_t>(1024,0xff123456));
@@ -368,6 +384,18 @@ int main() {
     f.completion->set_value(); resource_wait.join();
     assert(!backend->Busy(s.streams[0].vb));
 
+    // EN: Polling a submitted resource must not fragment unrelated work.
+    // PT-BR: Sondar recurso já submetido não deve fragmentar draws alheios.
+    auto other=s; other.streams[0].vb=0x1600; kernel::W32(0x1604,0x30000);
+    backend->Draw(s,5,0,3,nullptr); backend->Flush();
+    Submission previous; assert(Take(previous) && previous.completion);
+    backend->Draw(other,5,0,3,nullptr);
+    assert(backend->Busy(s.streams[0].vb)); assert(!Take(f));
+    previous.completion->set_value();
+    backend->WaitResource(s.streams[0].vb); assert(!Take(f));
+    backend->Flush(); assert(Take(f) && f.commands.size()==1 && f.completion);
+    f.completion->set_value();
+
     // Visibility reports sum exact device results from accepted counted draws,
     // preserving time/count/status publication and waiting for GPU completion.
     constexpr uint32_t report=0x8000;
@@ -384,6 +412,15 @@ int main() {
     f.commands[0].visibility->set_value(21); f.commands[1].visibility->set_value(34);
     f.completion->set_value(); report_wait.join();
     assert(kernel::R32(report+4)==0 && kernel::R32(report+8)==55 && kernel::R32(report+12)==0);
+    // EN: Repeated reports without ClearReport retain the cumulative count.
+    // PT-BR: Reports repetidos sem ClearReport preservam a soma acumulada.
+    backend->Draw(s,5,0,3,nullptr);
+    std::thread cumulative([&] { backend->GetReport(report); });
+    while(!Take(f))std::this_thread::yield();
+    assert(f.commands.size()==1 && f.commands[0].visibility);
+    f.commands[0].visibility->set_value(7);
+    f.completion->set_value(); cumulative.join();
+    assert(kernel::R32(report+8)==62);
     // Reset excludes old results, and a wide GPU count saturates the Xbox word.
     backend->ClearReport(); backend->Draw(s,5,0,3,nullptr);
     std::thread saturated([&] { backend->GetReport(report); });

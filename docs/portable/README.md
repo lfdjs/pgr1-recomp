@@ -67,6 +67,9 @@ O gitlink público é preservado; o patch SDK cumulativo inclui as mudanças
 locais anteriores. Fast hits guest e 60 FPS em corrida completa continuam
 pendentes; consulte evidências e limites no handoff.
 
+[Sincronização de recursos e readbacks (04D.22A)](38-resource-prefix-readback.md):
+redução de prefixos alheios, consultas cumulativas e cópia linear.
+
 **Convenção para novos commits:** preservar nomes de APIs, variáveis e
 símbolos em inglês; documentar decisões não triviais em comentários **EN/PT-BR**;
 adicionar seções em português e inglês aos novos documentos técnicos.

@@ -1,6 +1,7 @@
 // Xbox state/assembly stays on the guest thread; only owned commands cross to
 // the selected host API. The native Vulkan build shares this capture boundary.
 #include <algorithm>
+#include <iterator>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -91,6 +92,7 @@ class GLBackend final : public Backend {
     std::unordered_map<uint32_t,ResourceUse> resource_use_;
     uint64_t resource_generation_=1;
     std::vector<std::shared_future<uint64_t>> counted_;
+    uint64_t resolved_visibility_count_=0;
     uint32_t next_fence_=0;
     std::shared_future<void> Completion() {
         if(!frame_.completion) {
@@ -206,20 +208,43 @@ class GLBackend final : public Backend {
             std::optional<MemoryTracker::WriteGuard> write;
             if(Tracking()) write.emplace(texture_tracker_,address,TotalSize(desc));
 #endif
+#ifdef PGR1_NATIVE_VULKAN
+            // EN: Linear 32-bit surfaces already have the guest byte representation.
+            //     Preserve pitch padding; the tracker guard spans the whole write.
+            // PT-BR: Superfícies lineares de 32 bits já têm a representação guest.
+            //        Preserve padding; a guarda cobre toda a escrita.
+            const bool swizzled=Format(desc.format).swizzled;
+            const uint64_t row_bytes=uint64_t(desc.width)*sizeof(uint32_t);
+            if(!swizzled && desc.format!=0x2c && desc.format!=0x30 &&
+               desc.format!=0x05 && desc.format!=0x11 && desc.width && desc.height &&
+               row_bytes<=desc.pitch && uint64_t(address)+uint64_t(desc.height-1)*desc.pitch+row_bytes<=
+                   (uint64_t(1)<<32)) {
+                for(unsigned y=0;y<desc.height;++y) {
+                    const uint32_t row=address+y*desc.pitch;
+                    std::memcpy(kernel::HostPtr(row),pixels.data()+size_t(y)*desc.width,size_t(row_bytes));
+#ifdef XBE_PHYSICAL_WRITE_AUDIT
+                    // EN/PT-BR: Retain advisory journal notification / preserve notificação do diário.
+                    mem::PhysicalWriteAudit::Record(row,row_bytes,mem::PhysicalWriteSource::KernelHelper);
+#endif
+                }
+                return;
+            }
+#endif
+            const bool surface_swizzled=Format(desc.format).swizzled;
             for(unsigned y=0;y<desc.height;y++) for(unsigned x=0;x<desc.width;x++) {
 #ifdef PGR1_NATIVE_VULKAN
                 const auto pixel=pixels.at(size_t(y)*desc.width+x);
 #else
                 const auto pixel=pixels.at(size_t(desc.height-1-y)*desc.width+x);
 #endif
-                uint32_t offset=Format(desc.format).swizzled ? SwizzledOffset(x,y,desc.width,desc.height)*4 : y*desc.pitch+x*4;
+                uint32_t offset=surface_swizzled ? SwizzledOffset(x,y,desc.width,desc.height)*4 : y*desc.pitch+x*4;
                 if(desc.format==0x2c || desc.format==0x30) {
                     const uint16_t value=uint16_t(pixel);
-                    offset=Format(desc.format).swizzled ? SwizzledOffset(x,y,desc.width,desc.height)*2 : y*desc.pitch+x*2;
+                    offset=surface_swizzled ? SwizzledOffset(x,y,desc.width,desc.height)*2 : y*desc.pitch+x*2;
                     std::memcpy(kernel::HostPtr(address+offset),&value,2);
                 } else if(desc.format==0x05 || desc.format==0x11) {
                     const uint16_t packed=uint16_t(((pixel>>19)&31)<<11 | ((pixel>>10)&63)<<5 | ((pixel>>3)&31));
-                    offset=Format(desc.format).swizzled ? SwizzledOffset(x,y,desc.width,desc.height)*2 : y*desc.pitch+x*2;
+                    offset=surface_swizzled ? SwizzledOffset(x,y,desc.width,desc.height)*2 : y*desc.pitch+x*2;
                     std::memcpy(kernel::HostPtr(address+offset),&packed,2);
                 } else kernel::W32(address+offset,pixel);
             }
@@ -879,7 +904,12 @@ public:
     }
     void Sync(uint32_t data,uint32_t size) override {
         if(sync_profile_) ++frame_.sync.sync_calls;
-        for(const auto& [address,surface]:targets_) {
+        // EN: Size zero is an exact resource lookup (the hot vertex-stream path).
+        // PT-BR: Tamanho zero é busca exata (caminho frequente dos vertex streams).
+        const auto first=size?targets_.begin():targets_.find(data);
+        const auto last=size||first==targets_.end()?targets_.end():std::next(first);
+        for(auto it=first;it!=last;++it) {
+            const auto& [address,surface]=*it;
             const auto& [desc,target]=surface;
             if(!gpu_written_.contains(address) || !unread_.contains(address)) continue;
             // SDK passes size=0 for an exact resource, including every vertex stream.
@@ -941,8 +971,14 @@ public:
         if(sync_profile_) ++frame_.sync.gpu_busy_poll_count;
         const auto found=resource_use_.find(resource);
         if(found==resource_use_.end()) return false;
-        // A guest polling IsBusy must let the recorded prefix reach the device.
-        FlushFor(SubmissionReason::ResourceBusy);
+        // EN: Only the current unsubmitted prefix can contain this resource's
+        //     latest use. Older tokens are already queued; unrelated new draws
+        //     need not be flushed just to observe their completion.
+        // PT-BR: Só o prefixo atual não submetido pode conter o último uso.
+        //        Tokens antigos já estão na fila; novos draws alheios não
+        //        precisam ser submetidos para observar sua conclusão.
+        if(found->second.generation==resource_generation_)
+            FlushFor(SubmissionReason::ResourceBusy);
         if(Pending(found->second.completion)) return true;
         resource_use_.erase(found); return false;
     }
@@ -950,11 +986,15 @@ public:
         if(sync_profile_) ++frame_.sync.resource_wait_calls;
         const auto found=resource_use_.find(resource);
         if(found==resource_use_.end()) return;
-        FlushFor(SubmissionReason::ResourceWait);
+        if(found->second.generation==resource_generation_)
+            FlushFor(SubmissionReason::ResourceWait);
         WaitTimer timer(sync_profile_,frame_.sync.resource_wait_ms);
         WaitCompletion(found->second.completion); resource_use_.erase(found);
     }
-    void ClearReport() override { if(sync_profile_) ++frame_.sync.visibility_clears; counted_.clear(); }
+    void ClearReport() override {
+        if(sync_profile_) ++frame_.sync.visibility_clears;
+        counted_.clear(); resolved_visibility_count_=0;
+    }
 #endif
     void GetReport(uint32_t r) override {
 #ifdef PGR1_NATIVE_VULKAN
@@ -964,7 +1004,7 @@ public:
         if(sync_profile_) ++frame_.sync.visibility_reports;
         const auto completed=Completion();
         FlushFor(SubmissionReason::VisibilityReport);
-        uint64_t count=0;
+        uint64_t count=resolved_visibility_count_;
         constexpr uint64_t limit=UINT32_MAX;
         try {
             WaitTimer timer(sync_profile_,frame_.sync.visibility_report_wait_ms);
@@ -973,6 +1013,12 @@ public:
         } catch(const std::exception& e) {
             Fail(std::string("GPU visibility report cancelled: ")+e.what()); return;
         }
+        // EN: Keep the cumulative count until ClearReport, but retire resolved
+        //     futures so subsequent reports do not rescan all historical draws.
+        // PT-BR: Preserve a soma até ClearReport, mas retire futures concluídos
+        //        para não percorrer novamente todos os draws históricos.
+        resolved_visibility_count_=count;
+        counted_.clear();
         kernel::W32(r,uint32_t(frames_)); kernel::W32(r+4,0); kernel::W32(r+8,uint32_t(count));
         std::atomic_thread_fence(std::memory_order_release);
         kernel::W32(r+12,0);

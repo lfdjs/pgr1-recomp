@@ -107,6 +107,11 @@ Esses números indicam carga CPU relevante, mas não confirmam causalidade do so
 
 Resultados finais: preencher com os relatórios locais após o ciclo de hardware.
 
+**Nota pós-Codex:** `724e96e` registrou o gitlink local `068dc100`,
+indisponível nos dois remotos consultados. A 04D.22A restaura o pin público
+`97b1654` e conserva o patch cumulativo; não muda o checkout SDK do usuário.
+Não executar `git submodule update` sobre o SDK local modificado.
+
 Evidências locais em `.local/validation/04d21/`,
 `.local/validation/04d21-geometry/` e `.local/benchmarks/04d21-*`.
 Sanitizers de REP/aliases, geração real, lifecycle e geometria passaram com
